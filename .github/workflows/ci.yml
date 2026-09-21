@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  self-test:
+    name: build + fixture self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly-2026-09-21
+        with:
+          components: rustc-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: build driver
+        run: >
+          RUSTFLAGS="-L$(rustc --print sysroot)/lib"
+          cargo build --manifest-path unsafe-scope-lint/Cargo.toml
+      - name: bad fixture must be denied
+        run: |
+          set +e
+          LD_LIBRARY_PATH="$(rustc --print sysroot)/lib" \
+            ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
+            tests/bad.rs --crate-type bin --edition 2021 -D unsafe_scope
+          rc=$?
+          if [ "$rc" -eq 0 ]; then echo "FAIL: bad fixture passed"; exit 1; fi
+      - name: good fixture must pass
+        run: |
+          LD_LIBRARY_PATH="$(rustc --print sysroot)/lib" \
+            ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
+            tests/good.rs --crate-type bin --edition 2021 -D unsafe_scope

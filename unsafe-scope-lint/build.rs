@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 fn main() {
     let sysroot = rustc_sysroot();
+    // Link against this toolchain's rustc_private libraries...
     println!("cargo:rustc-link-search=native={}/lib", sysroot.display());
-    println!(
-        "cargo:rustc-env=USCOPE_SYSROOT_LIB={}/lib",
-        sysroot.display()
-    );
+    // ...and embed the directory as a runtime loader path (rpath), so the
+    // binary works as RUSTC_WRAPPER without any LD_LIBRARY_PATH setup.
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}/lib", sysroot.display());
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=USCOPE_SYSROOT");
 }

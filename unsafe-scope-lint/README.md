@@ -39,9 +39,9 @@ tools in CI):
   `clippy::multiple_unsafe_ops_per_block`.
 
 The binary is a rustc driver: cargo invokes it in place of rustc via
-`RUSTC_WRAPPER` (the same mechanism clippy uses). It re-execs itself with
-the correct loader path derived from cargo's rustc argument, so no
-environment setup is needed beyond the toolchain.
+`RUSTC_WRAPPER` (the same mechanism clippy uses). Its build bakes the
+toolchain's library directory as an rpath, so it runs with no environment
+setup beyond the toolchain itself.
 
 ## Requirements
 

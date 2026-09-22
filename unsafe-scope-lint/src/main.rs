@@ -83,37 +83,6 @@ fn main() {
         std::process::exit(status.code().unwrap_or(101));
     }
 
-    // The driver links librustc_driver.so from the toolchain it was built
-    // with. Make the binary self-contained as a RUSTC_WRAPPER: if that
-    // directory is not on the loader path, re-exec with it prepended. The
-    // directory is baked in at build time — the wrapped compiler's
-    // toolchain may differ from this binary's build toolchain.
-    if std::env::var_os("UNSAFE_SCOPE_REEXEC").is_none() {
-        {
-            let sysroot_lib = option_env!("USCOPE_SYSROOT_LIB")
-                .map(std::path::PathBuf::from)
-                .filter(|l| l.exists());
-            if let Some(lib) = sysroot_lib {
-                let current = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
-                if !current.split(':').any(|p| std::path::Path::new(p) == lib) {
-                    let new_ld = if current.is_empty() {
-                        lib.to_string_lossy().into_owned()
-                    } else {
-                        format!("{}:{}", lib.display(), current)
-                    };
-                    let mut cmd = std::process::Command::new(std::env::args().next().unwrap());
-                    cmd.args(&args)
-                        .env("LD_LIBRARY_PATH", new_ld)
-                        .env("UNSAFE_SCOPE_REEXEC", "1");
-                    let status = cmd.status().unwrap_or_else(|e| {
-                        eprintln!("unsafe-scope-lint: re-exec failed: {e}");
-                        std::process::exit(101);
-                    });
-                    std::process::exit(status.code().unwrap_or(101));
-                }
-            }
-        }
-    }
     // run_compiler expects argv including the program name.
     let mut at_args: Vec<String> = vec!["rustc".to_string()];
     at_args.extend(args);

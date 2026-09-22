@@ -129,6 +129,7 @@ fn main() {
 // -----------------------------------------------------------------------------
 // Which expressions require unsafe?
 
+#[derive(Clone)]
 struct UnsafeLeaf {
     hir_id: HirId,
     kind: &'static str,
@@ -280,6 +281,22 @@ fn leaves_in_expr<'a, 'tcx>(
     f.leaves
 }
 
+/// True if `l`'s expression is a HIR descendant of another collected leaf.
+fn is_nested_leaf<'a, 'tcx>(
+    cx: &'a LateContext<'tcx>,
+    l: &UnsafeLeaf,
+    leaves: &[UnsafeLeaf],
+) -> bool {
+    for (_, node) in cx.tcx.hir_parent_iter(l.hir_id) {
+        if let Node::Expr(e) = node {
+            if leaves.iter().any(|o| o.hir_id != l.hir_id && o.hir_id == e.hir_id) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn leaves_in_stmt<'a, 'tcx>(
     cx: &'a LateContext<'tcx>,
     s: &'tcx hir::Stmt<'tcx>,
@@ -316,6 +333,15 @@ impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
         if !any_unsafe {
             return; // entirely unnecessary — `unused_unsafe`'s job
         }
+
+        // A leaf contained in another leaf is part of the same operation
+        // (e.g. `*buf.add(idx)`: the raw deref's operand is an unsafe
+        // method call). Keep only the outermost ones.
+        let tail_leaves: Vec<UnsafeLeaf> = tail_leaves
+            .iter()
+            .filter(|l| !is_nested_leaf(cx, l, &tail_leaves))
+            .cloned()
+            .collect();
 
         // One diagnostic per block, emitted at the user's span. The primary
         // span must be local: macro-expanded tails (e.g. `format!`) can point

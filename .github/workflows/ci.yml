@@ -10,43 +10,74 @@ env:
 
 jobs:
   self-test:
-    name: build + fixture self-test
+    name: build + fixture self-test (driver + clippy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-09-21
-          components: rustc-dev
+          components: rustc-dev, clippy
       - uses: Swatinem/rust-cache@v2
       - name: build driver
         run: cargo build --manifest-path unsafe-scope-lint/Cargo.toml
-      - name: bad fixtures must be denied (each case individually)
+      - name: unsafe_scope bad fixtures must be denied (each case individually)
         run: |
           set +e
           fail=0
-          for f in tests/bad/*.rs; do
-            LD_LIBRARY_PATH="$(rustc --print sysroot)/lib" \
-              ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
+          for f in tests/bad/unsafe_scope/*.rs; do
+            ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
               "$f" --crate-type bin --edition 2021 -D unsafe_scope >/dev/null 2>&1
             rc=$?
             if [ "$rc" -eq 0 ]; then echo "FAIL: $f was not caught"; fail=1; fi
           done
           exit $fail
-      - name: good fixtures must pass
+      - name: clippy-owned bad fixtures must pass the driver (owned by classic lints)
+        run: |
+          set +e
+          fail=0
+          for f in tests/bad/clippy/*.rs; do
+            ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
+              "$f" --crate-type bin --edition 2021 -D unsafe_scope >/dev/null 2>&1
+            rc=$?
+            if [ "$rc" -ne 0 ]; then echo "FAIL: $f is not unsafe_scope's job"; fail=1; fi
+          done
+          exit $fail
+      - name: classic-lint bad fixtures must be denied by clippy list
+        run: |
+          set +e
+          fail=0
+          for f in tests/bad/clippy/*.rs; do
+            clippy-driver "$f" --crate-type bin --edition 2021 \
+              -D clippy::multiple_unsafe_ops_per_block -D unused_unsafe \
+              --out-dir target/clippy-fixture-out >/dev/null 2>&1
+            rc=$?
+            if [ "$rc" -eq 0 ]; then echo "FAIL: $f was not caught by clippy list"; fail=1; fi
+          done
+          exit $fail
+      - name: good fixtures must pass driver AND clippy list
         run: |
           set +e
           fail=0
           for f in tests/good/*.rs; do
-            LD_LIBRARY_PATH="$(rustc --print sysroot)/lib" \
-              ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
+            ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
               "$f" --crate-type bin --edition 2021 -D unsafe_scope >/dev/null 2>&1
             rc=$?
             if [ "$rc" -ne 0 ]; then
-              echo "FAIL: $f produced a false positive"
-              LD_LIBRARY_PATH="$(rustc --print sysroot)/lib" \
-                ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
+              echo "FAIL: $f produced a false positive in the driver"
+              ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
                 "$f" --crate-type bin --edition 2021 -D unsafe_scope || true
+              fail=1
+            fi
+            clippy-driver "$f" --crate-type bin --edition 2021 \
+              -D clippy::multiple_unsafe_ops_per_block -D unused_unsafe \
+              --out-dir target/clippy-fixture-out >/dev/null 2>&1
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "FAIL: $f produced a false positive in clippy list"
+              clippy-driver "$f" --crate-type bin --edition 2021 \
+                -D clippy::multiple_unsafe_ops_per_block -D unused_unsafe \
+                --out-dir target/clippy-fixture-out || true
               fail=1
             fi
           done

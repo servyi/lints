@@ -1,17 +1,42 @@
 # unsafe-scope-lint
 
-A custom rustc lint (`unsafe_scope`) that reports `unsafe` blocks wrapping
-more than the operations that actually require unsafe:
+A custom rustc lint (`unsafe_scope`) enforcing the strict shape of `unsafe`
+blocks: the block body may only
+
+* read bindings that already exist (place expressions rooted at a local,
+  built from field accesses and reference dereferences), and
+* perform exactly one operation that requires unsafe, whose operands are
+  such binding reads.
+
+Everything else — computing arguments, arithmetic, casts, literals in
+operand position, `let` statements — must be hoisted out of the block, and
+the unsafe blocks are then let-chained:
 
 ```rust
-let x = unsafe { 1 + *p };     // warned: only `*p` requires unsafe
-let x = 1 + unsafe { *p };     // fine
-unsafe { *mp = 5 };            // fine: place-expression cannot be wrapped separately
+let x = unsafe { 1 + *p };                   // bad: arithmetic inside
+let x = 1 + unsafe { *p };                   // good
+let _ = unsafe { read_at(p, compute(x)) };   // bad: computed argument
+let idx = compute(x);
+let _ = unsafe { read_at(p, idx) };          // good
+let q = unsafe { buf.add(idx) };
+let v = unsafe { *q };                       // good (let-chain)
+unsafe { *mp = value };                      // good (value side is a read)
+unsafe { *mp = 5 };                          // bad: literal operand
 ```
 
-Type-aware (knows raw pointers, unsafe fn/method/`FnPtr` calls,
-`#[target_feature]` functions, `static mut`, union fields, inline asm) and
-place-sensitive (`*p = x`, `&*p`, `(*p).f`, `S += 1` are correctly minimal).
+Type-aware: raw-pointer derefs, unsafe fn/method/`FnPtr` calls,
+`#[target_feature]` functions, `static mut`, union fields and inline asm
+count as unsafe operations; `&*p`, `(*p).f`, `*p = v` and `*p += v` are
+recognized as single place-operations on binding reads.
+
+Out of scope on purpose (classic rules live in rustc/clippy — see
+[`example-workspace-lints.toml`](../example-workspace-lints.toml), run both
+tools in CI):
+
+* blocks containing no operation that requires unsafe at all →
+  `rustc::unused_unsafe`;
+* more than one unsafe operation per block →
+  `clippy::multiple_unsafe_ops_per_block`.
 
 The binary is a rustc driver: cargo invokes it in place of rustc via
 `RUSTC_WRAPPER` (the same mechanism clippy uses). It re-execs itself with
@@ -27,26 +52,24 @@ environment setup is needed beyond the toolchain.
   clippy-driver), so run it in a separate `CARGO_TARGET_DIR` to avoid
   clobbering stable artifacts.
 
-## Reuse from any project
-
-Install once (from this repo, a fork, or a checkout):
+## Usage
 
 ```bash
-cargo install --path tools/unsafe-scope-lint        # or --git <url> --subdir ...
-```
-
-Then in any project (CI or locally):
-
-```bash
-RUSTC_WRAPPER=unsafe-scope-lint \
+cargo build --release
+RUSTC_WRAPPER="$PWD/target/release/unsafe-scope-lint" \
 RUSTFLAGS="-D unsafe_scope" \
 CARGO_TARGET_DIR=target/unsafe-scope \
-cargo +nightly check --workspace --all-targets
+cargo check --workspace --all-targets
 ```
 
-Omit `-D` to see warnings without failing the build. The fixture
-(`tests-fixture.rs`) doubles as a self-test: all `BAD` lines fire, all
-`GOOD` lines (including the place-expression traps) stay silent.
+Omit `-D` to see warnings without failing the build.
+
+## Self-test
+
+`tests/bad/unsafe_scope/*.rs` must be denied, `tests/bad/clippy/*.rs` must
+pass this driver (they are forbidden by the classic lints instead), and
+`tests/good/*.rs` must stay silent under both — CI runs exactly those
+loops.
 
 ## Version coupling
 

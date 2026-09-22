@@ -1,5 +1,6 @@
 static mut COUNTER: u32 = 0;
 
 fn main() {
-    unsafe { COUNTER += 1 };
+    let one = 1u32;
+    unsafe { COUNTER += one };
 }

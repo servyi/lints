@@ -1,6 +1,8 @@
-//! `unsafe_scope`: report unsafe blocks that wrap more than the operations
-//! that actually require unsafe — `unsafe { 1 + *p }` instead of
-//! `1 + unsafe { *p }`.
+//! `unsafe_scope`: enforce the strict shape of `unsafe` blocks — the block
+//! body must be reads of existing bindings plus exactly one operation that
+//! requires unsafe whose operands are those binding reads; everything else
+//! (argument computation, arithmetic, `let`) must be hoisted out and the
+//! unsafe blocks let-chained: `let q = unsafe { buf.add(i) }; unsafe { *q }`.
 //!
 //! Used as a `RUSTC_WRAPPER`: cargo invokes this binary in place of rustc;
 //! it registers one extra late lint and otherwise behaves exactly like the
@@ -20,18 +22,20 @@ extern crate rustc_span;
 use rustc_ast::Mutability;
 use rustc_hir as hir;
 use rustc_hir::intravisit::{self, Visitor};
-use rustc_hir::{BlockCheckMode, ExprKind, HirId, Node, UnsafeSource};
+use rustc_hir::{BlockCheckMode, ExprKind, HirId, UnsafeSource};
 use rustc_lint::{LateContext, LateLintPass, LintContext, declare_lint, impl_lint_pass};
 use rustc_middle::ty::{self};
 use rustc_hir::def_id::DefId;
 use rustc_span::sym;
 
 declare_lint! {
-    /// Checks that `unsafe` blocks wrap only the operations that require
-    /// unsafe. Larger blocks hide which operations are actually unsafe.
+    /// Checks that `unsafe` blocks contain only reads of existing bindings
+    /// and a single unsafe operation with binding operands. Anything else
+    /// hides which operations are actually unsafe and where their values
+    /// come from.
     pub UNSAFE_SCOPE,
     Warn,
-    "unsafe block wraps more than the operations that require unsafe"
+    "unsafe block body must be binding reads plus a single unsafe operation"
 }
 
 impl_lint_pass!(UnsafeScope => [UNSAFE_SCOPE]);
@@ -133,10 +137,6 @@ fn main() {
 struct UnsafeLeaf {
     hir_id: HirId,
     kind: &'static str,
-    /// Whether the leaf can be individually wrapped (`unsafe { leaf }`)
-    /// without changing meaning. A deref used as a place (borrow operand,
-    /// assignment lhs, base of field access) cannot be moved out.
-    movable: bool,
 }
 
 struct LeafFinder<'a, 'tcx> {
@@ -164,9 +164,9 @@ impl<'a, 'tcx> Visitor<'tcx> for LeafFinder<'a, 'tcx> {
                 return;
             }
         }
-        if let Some((kind, movable)) = self.classify(e) {
+        if let Some(kind) = self.classify(e) {
             if !self.inside_unsafe_block {
-                self.leaves.push(UnsafeLeaf { hir_id: e.hir_id, kind, movable });
+                self.leaves.push(UnsafeLeaf { hir_id: e.hir_id, kind });
             }
         }
         intravisit::walk_expr(self, e);
@@ -174,95 +174,52 @@ impl<'a, 'tcx> Visitor<'tcx> for LeafFinder<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> LeafFinder<'a, 'tcx> {
-    fn classify(&self, e: &'tcx hir::Expr<'tcx>) -> Option<(&'static str, bool)> {
+    fn classify(&self, e: &'tcx hir::Expr<'tcx>) -> Option<&'static str> {
         let cx = self.cx;
         match e.kind {
             ExprKind::Unary(hir::UnOp::Deref, inner) => {
                 let ty = cx.typeck_results().expr_ty_opt(inner)?;
-                if ty.is_raw_ptr() {
-                    let movable = !self.parent_is_place_sensitive(e);
-                    Some(("dereference of raw pointer", movable))
-                } else {
-                    None
-                }
+                ty.is_raw_ptr().then_some("dereference of raw pointer")
             }
             ExprKind::Call(f, _) => {
                 let ty = cx.typeck_results().expr_ty_opt(f)?;
                 match ty.kind() {
                     ty::FnDef(did, _) => {
-                        if is_unsafe_callee(cx, *did) {
-                            Some(("call to unsafe function", true))
-                        } else {
-                            None
-                        }
+                        is_unsafe_callee(cx, *did).then_some("call to unsafe function")
                     }
                     ty::FnPtr(sig_tys, hdr) => {
-                        if hdr.safety().is_unsafe() {
-                            let _ = sig_tys;
-                            Some(("call through unsafe function pointer", true))
-                        } else {
-                            None
-                        }
+                        let _ = sig_tys;
+                        hdr.safety()
+                            .is_unsafe()
+                            .then_some("call through unsafe function pointer")
                     }
                     _ => None,
                 }
             }
             ExprKind::MethodCall(..) => {
                 let did = cx.typeck_results().type_dependent_def_id(e.hir_id);
-                match did {
-                    Some(did) if is_unsafe_callee(cx, did) => {
-                        Some(("call to unsafe method", true))
-                    }
-                    _ => None,
-                }
+                did.filter(|did| is_unsafe_callee(cx, *did))
+                    .map(|_| "call to unsafe method")
             }
             ExprKind::Path(qpath) => {
                 match cx.typeck_results().qpath_res(&qpath, e.hir_id) {
                     hir::def::Res::Def(
                         hir::def::DefKind::Static { mutability: Mutability::Mut, .. },
                         _,
-                    ) => {
-                        let movable = !self.parent_is_place_sensitive(e);
-                        Some(("access to `static mut`", movable))
-                    }
+                    ) => Some("access to `static mut`"),
                     _ => None,
                 }
             }
             ExprKind::Field(base, _) => {
                 let ty = cx.typeck_results().expr_ty_opt(base)?;
-                if let ty::Adt(def, _) = ty.kind() {
-                    def.is_union().then(|| {
-                        let movable = !self.parent_is_place_sensitive(e);
-                        ("access to union field", movable)
-                    })
-                } else {
-                    None
+                match ty.kind() {
+                    ty::Adt(def, _) if def.is_union() => Some("access to union field"),
+                    _ => None,
                 }
             }
-            ExprKind::InlineAsm(_) => Some(("inline assembly", true)),
+            ExprKind::InlineAsm(_) => Some("inline assembly"),
             _ => None,
         }
-    }
-
-    /// `&*p`, `&raw const *p`, `*p = x`, `(*p).field` — the deref is a
-    /// place and cannot be wrapped separately.
-    fn parent_is_place_sensitive(&self, e: &hir::Expr<'_>) -> bool {
-        for (_, node) in self.cx.tcx.hir_parent_iter(e.hir_id) {
-            match node {
-                Node::Expr(parent) => match parent.kind {
-                    ExprKind::AddrOf(_, _, inner) => {
-                        return inner.hir_id == e.hir_id;
-                    }
-                    ExprKind::Assign(lhs, _, _) | ExprKind::AssignOp(_, lhs, _) => {
-                        return lhs.hir_id == e.hir_id;
-                    }
-                    ExprKind::Field(inner, _) => return inner.hir_id == e.hir_id,
-                    _ => return false,
-                },
-                _ => continue,
-            }
-        }
-        false
     }
 }
 
@@ -281,22 +238,6 @@ fn leaves_in_expr<'a, 'tcx>(
     f.leaves
 }
 
-/// True if `l`'s expression is a HIR descendant of another collected leaf.
-fn is_nested_leaf<'a, 'tcx>(
-    cx: &'a LateContext<'tcx>,
-    l: &UnsafeLeaf,
-    leaves: &[UnsafeLeaf],
-) -> bool {
-    for (_, node) in cx.tcx.hir_parent_iter(l.hir_id) {
-        if let Node::Expr(e) = node {
-            if leaves.iter().any(|o| o.hir_id != l.hir_id && o.hir_id == e.hir_id) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 fn leaves_in_stmt<'a, 'tcx>(
     cx: &'a LateContext<'tcx>,
     s: &'tcx hir::Stmt<'tcx>,
@@ -306,8 +247,182 @@ fn leaves_in_stmt<'a, 'tcx>(
     f.leaves
 }
 
+/// A "binding read": a place expression rooted at an existing local binding,
+/// built only from field accesses, shared/mutable references taken to such
+/// places, and dereferences of references (never raw pointers). Everything
+/// else — calls, arithmetic, casts, literals, `let` — must be hoisted out of
+/// an unsafe block.
+fn is_binding_place<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) -> bool {
+    match e.kind {
+        ExprKind::Path(qpath) => matches!(
+            cx.typeck_results().qpath_res(&qpath, e.hir_id),
+            hir::def::Res::Local(_)
+        ),
+        ExprKind::Field(base, _) => is_binding_place(cx, base),
+        // Taking a reference to a binding read is itself a pure read
+        // (`&x`, `&x.f`); `&raw`/`&*p` forms fall through the deref arm.
+        ExprKind::AddrOf(_, _, inner) => is_binding_place(cx, inner),
+        ExprKind::Unary(hir::UnOp::Deref, inner) => {
+            // Dereferencing a raw pointer is itself the unsafe operation;
+            // only reference derefs count as safe place reads.
+            let is_ref = cx
+                .typeck_results()
+                .expr_ty_opt(inner)
+                .is_some_and(|ty| matches!(ty.kind(), ty::Ref(..)));
+            is_ref && is_binding_place(cx, inner)
+        }
+        _ => false,
+    }
+}
+
+/// True when `e` is an ancestor expression of `leaf_hir_id`.
+fn contains_leaf<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>, leaf_hir_id: HirId) -> bool {
+    e.hir_id == leaf_hir_id || cx.tcx.hir_parent_iter(leaf_hir_id).any(|(id, _)| id == e.hir_id)
+}
+
+/// Walk a body expression down to its single unsafe operation, allowing only
+/// place layers around the leaf: `&leaf`, `leaf.field`, reference derefs, and
+/// `place_leaf = binding_read` assignments. Returns the leaf expression, or
+/// None (with a note already pushed) when the shape is not allowed.
+fn unwrap_to_leaf<'tcx>(
+    cx: &LateContext<'tcx>,
+    e: &'tcx hir::Expr<'tcx>,
+    leaf_hir_id: HirId,
+    notes: &mut Vec<(rustc_span::Span, String)>,
+) -> Option<&'tcx hir::Expr<'tcx>> {
+    if e.hir_id == leaf_hir_id {
+        return Some(e);
+    }
+    match e.kind {
+        // `&*p`, `(*p).field`, and reference-deref layers stay part of the
+        // same place operation.
+        ExprKind::AddrOf(_, _, inner)
+        | ExprKind::Field(inner, _)
+        | ExprKind::Unary(hir::UnOp::Deref, inner) => {
+            if matches!(e.kind, ExprKind::Unary(hir::UnOp::Deref, _)) {
+                let is_ref = cx
+                    .typeck_results()
+                    .expr_ty_opt(inner)
+                    .is_some_and(|ty| matches!(ty.kind(), ty::Ref(..)));
+                if !is_ref {
+                    return None;
+                }
+            }
+            unwrap_to_leaf(cx, inner, leaf_hir_id, notes)
+        }
+        // `*p = binding_read` / `*p += binding_read`: the assignment target
+        // side carries the unsafe operation, the value side is a plain read.
+        ExprKind::Assign(lhs, rhs, _) | ExprKind::AssignOp(_, lhs, rhs) => {
+            let (place, value) = if contains_leaf(cx, lhs, leaf_hir_id) {
+                (lhs, rhs)
+            } else if contains_leaf(cx, rhs, leaf_hir_id) {
+                (rhs, lhs)
+            } else {
+                return None;
+            };
+            let leaf = unwrap_to_leaf(cx, place, leaf_hir_id, notes)?;
+            if !is_binding_place(cx, value) {
+                notes.push((
+                    value.span,
+                    format!(
+                        "{SHAPE_MSG}: the value side must be a plain read of an \
+                         existing binding"
+                    ),
+                ));
+            }
+            Some(leaf)
+        }
+        _ => None,
+    }
+}
+
+const SHAPE_MSG: &str = "unsafe block body must be a read of an existing binding, \
+     or a single unsafe operation whose operands are existing bindings; \
+     hoist everything else out and let-chain the unsafe blocks";
+
+fn check_body_expr<'tcx>(
+    cx: &LateContext<'tcx>,
+    e: &'tcx hir::Expr<'tcx>,
+    leaves: &[UnsafeLeaf],
+    notes: &mut Vec<(rustc_span::Span, String)>,
+) {
+    if matches!(e.kind, ExprKind::Block(_, _)) {
+        return; // inner block: covered by its own check_expr invocation
+    }
+    if leaves.is_empty() {
+        if !is_binding_place(cx, e) {
+            notes.push((
+                e.span,
+                format!("{SHAPE_MSG}: this expression does not require unsafe"),
+            ));
+        }
+        return;
+    }
+    if leaves.len() == 1 {
+        if let Some(leaf) = unwrap_to_leaf(cx, e, leaves[0].hir_id, notes) {
+            check_leaf_operands(cx, leaf, notes);
+        } else {
+            notes.push((e.span, SHAPE_MSG.to_string()));
+        }
+        return;
+    }
+    notes.push((e.span, SHAPE_MSG.to_string()));
+    for l in leaves {
+        notes.push((
+            cx.tcx.hir_span(l.hir_id),
+            format!("{} requires unsafe", l.kind),
+        ));
+    }
+}
+
+/// The unsafe operation's operands must be plain reads of existing bindings.
+fn check_leaf_operands<'tcx>(
+    cx: &LateContext<'tcx>,
+    leaf: &'tcx hir::Expr<'tcx>,
+    notes: &mut Vec<(rustc_span::Span, String)>,
+) {
+    let mut operands: Vec<&hir::Expr<'tcx>> = Vec::new();
+    match leaf.kind {
+        ExprKind::Unary(hir::UnOp::Deref, inner) => operands.push(inner),
+        ExprKind::Field(base, _) => operands.push(base),
+        ExprKind::Call(_, args) => operands.extend(args),
+        ExprKind::MethodCall(_, receiver, args, _) => {
+            operands.push(receiver);
+            operands.extend(args);
+        }
+        ExprKind::Path(_) | ExprKind::InlineAsm(_) => {}
+        _ => {}
+    }
+    for op in operands {
+        if !is_binding_place(cx, op) {
+            notes.push((
+                op.span,
+                format!(
+                    "{SHAPE_MSG}: operand must be a plain read of an existing \
+                     binding; hoist it out of the unsafe block"
+                ),
+            ));
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // The pass
+//
+// Strict shape model: inside an `unsafe` block only
+//   * reads of bindings that already exist (place expressions rooted at a
+//     local, built from field accesses and reference derefs), and
+//   * exactly one operation that requires unsafe, whose operands are such
+//     binding reads,
+// may appear. Anything else — computing arguments, arithmetic, casts, `let`
+// bindings — must be hoisted out of the block (let-chain style):
+//
+//     let idx = compute(x);
+//     let q = unsafe { buf.add(idx) };
+//     let v = unsafe { *q };
+//
+// Blocks containing no operation that requires unsafe at all are left to
+// rustc's builtin `unused_unsafe` lint.
 
 pub struct UnsafeScope;
 
@@ -328,72 +443,29 @@ impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
         let stmt_leaves: Vec<Vec<UnsafeLeaf>> =
             b.stmts.iter().map(|s| leaves_in_stmt(cx, s)).collect();
         let tail_leaves = b.expr.map(|t| leaves_in_expr(cx, t)).unwrap_or_default();
-        let any_unsafe =
-            !tail_leaves.is_empty() || stmt_leaves.iter().any(|l| !l.is_empty());
-        if !any_unsafe {
+        let total: usize = stmt_leaves.iter().map(Vec::len).sum::<usize>() + tail_leaves.len();
+        if total == 0 {
             return; // entirely unnecessary — `unused_unsafe`'s job
         }
-
-        // A leaf contained in another leaf is part of the same operation
-        // (e.g. `*buf.add(idx)`: the raw deref's operand is an unsafe
-        // method call). Keep only the outermost ones.
-        let tail_leaves: Vec<UnsafeLeaf> = tail_leaves
-            .iter()
-            .filter(|l| !is_nested_leaf(cx, l, &tail_leaves))
-            .cloned()
-            .collect();
 
         // One diagnostic per block, emitted at the user's span. The primary
         // span must be local: macro-expanded tails (e.g. `format!`) can point
         // into a foreign crate, and emission there is silently dropped.
         let mut notes: Vec<(rustc_span::Span, String)> = Vec::new();
 
-        // Safe padding statements around the unsafe core.
         for (s, leaves) in b.stmts.iter().zip(&stmt_leaves) {
-            if leaves.is_empty() {
-                notes.push((
-                    s.span,
-                    "statement does not require unsafe; move it out of the block".to_string(),
-                ));
+            match s.kind {
+                hir::StmtKind::Expr(e) | hir::StmtKind::Semi(e) => {
+                    check_body_expr(cx, e, leaves, &mut notes);
+                }
+                // `let` and item statements introduce definitions; hoist them.
+                _ => {
+                    notes.push((s.span, SHAPE_MSG.to_string()));
+                }
             }
         }
-
-        // Tail expression larger than the unsafe operations it contains.
         if let Some(tail) = b.expr {
-            if matches!(tail.kind, ExprKind::Block(_, _)) {
-                return; // covered by its own check_expr invocation
-            }
-            let is_leaf_itself = tail_leaves.len() == 1 && tail_leaves[0].hir_id == tail.hir_id;
-            if tail_leaves.is_empty() || is_leaf_itself {
-                return;
-            }
-            let all_movable = tail_leaves.iter().all(|l| l.movable);
-            if !all_movable && !tail_leaves.iter().any(|l| l.movable) {
-                // Every unsafe operation is a place-expression that cannot
-                // be individually wrapped; the block cannot shrink here.
-                return;
-            }
-            notes.push((
-                tail.span,
-                if all_movable {
-                    format!(
-                        "unsafe block is larger than necessary: only {} wrapped \
-                         sub-expression(s) require unsafe; wrap those instead, e.g. \
-                         `safe_part + unsafe {{ *p }}`",
-                        tail_leaves.len()
-                    )
-                } else {
-                    "unsafe block is larger than necessary: only the operations noted \
-                     below require unsafe; the marked place-expression must stay inside"
-                        .to_string()
-                },
-            ));
-            for l in &tail_leaves {
-                notes.push((
-                    cx.tcx.hir_span(l.hir_id),
-                    format!("{} requires unsafe", l.kind),
-                ));
-            }
+            check_body_expr(cx, tail, &tail_leaves, &mut notes);
         }
 
         if notes.is_empty() {

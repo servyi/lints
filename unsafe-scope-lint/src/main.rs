@@ -55,22 +55,39 @@ fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     // As RUSTC_WRAPPER, cargo passes the real rustc path as the first arg.
     let rustc_path = if std::env::var_os("RUSTC_WRAPPER").is_some()
-        && args.first().is_some_and(|a| a.ends_with("rustc"))
+        && args
+            .first()
+            .is_some_and(|a| a.ends_with("rustc") || a.ends_with("clippy-driver"))
     {
         Some(args.remove(0))
     } else {
         None
     };
 
+    // cargo probes the wrapper (`--print=file-names` et al.) to discover
+    // target properties. Delegate such probes to the wrapped compiler
+    // verbatim: this driver cannot answer them reliably across toolchains.
+    if rustc_path.is_some() && args.iter().any(|a| a == "--print=file-names") {
+        let real = rustc_path.as_deref().unwrap();
+        let status = std::process::Command::new(real)
+            .args(&args)
+            .status()
+            .unwrap_or_else(|e| {
+                eprintln!("unsafe-scope-lint: probe delegation failed: {e}");
+                std::process::exit(101);
+            });
+        std::process::exit(status.code().unwrap_or(101));
+    }
+
     // The driver links librustc_driver.so from the toolchain it was built
     // with. Make the binary self-contained as a RUSTC_WRAPPER: if that
-    // directory is not on the loader path, re-exec with it prepended
-    // (derived from the rustc path cargo passed us: <sysroot>/bin/rustc).
+    // directory is not on the loader path, re-exec with it prepended. The
+    // directory is baked in at build time — the wrapped compiler's
+    // toolchain may differ from this binary's build toolchain.
     if std::env::var_os("UNSAFE_SCOPE_REEXEC").is_none() {
-        if let Some(rustc) = &rustc_path {
-            let bin = std::path::Path::new(rustc).parent().map(std::path::Path::to_path_buf);
-            let sysroot_lib = bin
-                .and_then(|b| b.parent().map(|p| p.join("lib")))
+        {
+            let sysroot_lib = option_env!("USCOPE_SYSROOT_LIB")
+                .map(std::path::PathBuf::from)
                 .filter(|l| l.exists());
             if let Some(lib) = sysroot_lib {
                 let current = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
@@ -128,6 +145,12 @@ struct LeafFinder<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for LeafFinder<'a, 'tcx> {
+    type NestedFilter = rustc_middle::hir::nested_filter::OnlyBodies;
+
+    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+        self.cx.tcx
+    }
+
     fn visit_expr(&mut self, e: &'tcx hir::Expr<'tcx>) {
         if let ExprKind::Block(b, _) = e.kind {
             if matches!(b.rules, BlockCheckMode::UnsafeBlock(_)) {
@@ -154,7 +177,7 @@ impl<'a, 'tcx> LeafFinder<'a, 'tcx> {
         let cx = self.cx;
         match e.kind {
             ExprKind::Unary(hir::UnOp::Deref, inner) => {
-                let ty = cx.typeck_results().expr_ty(inner);
+                let ty = cx.typeck_results().expr_ty_opt(inner)?;
                 if ty.is_raw_ptr() {
                     let movable = !self.parent_is_place_sensitive(e);
                     Some(("dereference of raw pointer", movable))
@@ -163,7 +186,7 @@ impl<'a, 'tcx> LeafFinder<'a, 'tcx> {
                 }
             }
             ExprKind::Call(f, _) => {
-                let ty = cx.typeck_results().expr_ty(f);
+                let ty = cx.typeck_results().expr_ty_opt(f)?;
                 match ty.kind() {
                     ty::FnDef(did, _) => {
                         if is_unsafe_callee(cx, *did) {
@@ -205,7 +228,7 @@ impl<'a, 'tcx> LeafFinder<'a, 'tcx> {
                 }
             }
             ExprKind::Field(base, _) => {
-                let ty = cx.typeck_results().expr_ty(base);
+                let ty = cx.typeck_results().expr_ty_opt(base)?;
                 if let ty::Adt(def, _) = ty.kind() {
                     def.is_union().then(|| {
                         let movable = !self.parent_is_place_sensitive(e);
@@ -278,6 +301,13 @@ impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
             return;
         }
 
+        // Skip work entirely where the lint is not active (e.g. dependencies
+        // compiled with `--cap-lints allow`, or `#[allow]`'d scopes).
+        let spec = cx.get_lint_level_spec(UNSAFE_SCOPE);
+        if spec.is_allow() || spec.is_expect() {
+            return;
+        }
+
         let stmt_leaves: Vec<Vec<UnsafeLeaf>> =
             b.stmts.iter().map(|s| leaves_in_stmt(cx, s)).collect();
         let tail_leaves = b.expr.map(|t| leaves_in_expr(cx, t)).unwrap_or_default();
@@ -287,19 +317,18 @@ impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
             return; // entirely unnecessary — `unused_unsafe`'s job
         }
 
+        // One diagnostic per block, emitted at the user's span. The primary
+        // span must be local: macro-expanded tails (e.g. `format!`) can point
+        // into a foreign crate, and emission there is silently dropped.
+        let mut notes: Vec<(rustc_span::Span, String)> = Vec::new();
+
         // Safe padding statements around the unsafe core.
         for (s, leaves) in b.stmts.iter().zip(&stmt_leaves) {
             if leaves.is_empty() {
-                cx.opt_span_lint(
-                    UNSAFE_SCOPE,
-                    Some(s.span),
-                    rustc_errors::DiagDecorator(|diag: &mut rustc_errors::Diag<'_>| {
-                        diag.span_note(
-                            s.span,
-                            "statement does not require unsafe; move it out of the block",
-                        );
-                    }),
-                );
+                notes.push((
+                    s.span,
+                    "statement does not require unsafe; move it out of the block".to_string(),
+                ));
             }
         }
 
@@ -308,11 +337,8 @@ impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
             if matches!(tail.kind, ExprKind::Block(_, _)) {
                 return; // covered by its own check_expr invocation
             }
-            if tail_leaves.is_empty() {
-                return;
-            }
             let is_leaf_itself = tail_leaves.len() == 1 && tail_leaves[0].hir_id == tail.hir_id;
-            if is_leaf_itself {
+            if tail_leaves.is_empty() || is_leaf_itself {
                 return;
             }
             let all_movable = tail_leaves.iter().all(|l| l.movable);
@@ -321,11 +347,9 @@ impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
                 // be individually wrapped; the block cannot shrink here.
                 return;
             }
-            cx.opt_span_lint(
-                UNSAFE_SCOPE,
-                Some(tail.span),
-                rustc_errors::DiagDecorator(|diag: &mut rustc_errors::Diag<'_>| {
-                diag.note(if all_movable {
+            notes.push((
+                tail.span,
+                if all_movable {
                     format!(
                         "unsafe block is larger than necessary: only {} wrapped \
                          sub-expression(s) require unsafe; wrap those instead, e.g. \
@@ -336,15 +360,27 @@ impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
                     "unsafe block is larger than necessary: only the operations noted \
                      below require unsafe; the marked place-expression must stay inside"
                         .to_string()
-                });
-                for l in &tail_leaves {
-                    diag.span_note(
-                        cx.tcx.hir_span(l.hir_id),
-                        format!("{} requires unsafe", l.kind),
-                    );
-                }
-                }),
-            );
+                },
+            ));
+            for l in &tail_leaves {
+                notes.push((
+                    cx.tcx.hir_span(l.hir_id),
+                    format!("{} requires unsafe", l.kind),
+                ));
+            }
         }
+
+        if notes.is_empty() {
+            return;
+        }
+        cx.opt_span_lint(
+            UNSAFE_SCOPE,
+            Some(b.span),
+            rustc_errors::DiagDecorator(|diag| {
+                for (span, msg) in &notes {
+                    diag.span_note(*span, msg.clone());
+                }
+            }),
+        );
     }
 }

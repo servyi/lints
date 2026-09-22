@@ -20,7 +20,7 @@ step, always current (pin with `ref:` for reproducible runs):
       - uses: dtolnay/rust-toolchain@nightly-2026-09-21
         with:
           components: rustc-dev
-      - run: RUSTFLAGS="-L$(rustc --print sysroot)/lib" cargo build --manifest-path lints/unsafe-scope-lint/Cargo.toml
+      - run: cargo build --manifest-path lints/unsafe-scope-lint/Cargo.toml
       - run: >
           RUSTC_WRAPPER="$GITHUB_WORKSPACE/lints/unsafe-scope-lint/target/debug/unsafe-scope-lint"
           RUSTFLAGS="-D unsafe_scope"

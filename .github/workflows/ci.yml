@@ -19,19 +19,34 @@ jobs:
           components: rustc-dev
       - uses: Swatinem/rust-cache@v2
       - name: build driver
-        run: >
-          RUSTFLAGS="-L$(rustc --print sysroot)/lib"
-          cargo build --manifest-path unsafe-scope-lint/Cargo.toml
-      - name: bad fixture must be denied
+        run: cargo build --manifest-path unsafe-scope-lint/Cargo.toml
+      - name: bad fixtures must be denied (each case individually)
         run: |
           set +e
-          LD_LIBRARY_PATH="$(rustc --print sysroot)/lib" \
-            ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
-            tests/bad.rs --crate-type bin --edition 2021 -D unsafe_scope
-          rc=$?
-          if [ "$rc" -eq 0 ]; then echo "FAIL: bad fixture passed"; exit 1; fi
-      - name: good fixture must pass
+          fail=0
+          for f in tests/bad/*.rs; do
+            LD_LIBRARY_PATH="$(rustc --print sysroot)/lib" \
+              ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
+              "$f" --crate-type bin --edition 2021 -D unsafe_scope >/dev/null 2>&1
+            rc=$?
+            if [ "$rc" -eq 0 ]; then echo "FAIL: $f was not caught"; fail=1; fi
+          done
+          exit $fail
+      - name: good fixtures must pass
         run: |
-          LD_LIBRARY_PATH="$(rustc --print sysroot)/lib" \
-            ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
-            tests/good.rs --crate-type bin --edition 2021 -D unsafe_scope
+          set +e
+          fail=0
+          for f in tests/good/*.rs; do
+            LD_LIBRARY_PATH="$(rustc --print sysroot)/lib" \
+              ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
+              "$f" --crate-type bin --edition 2021 -D unsafe_scope >/dev/null 2>&1
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "FAIL: $f produced a false positive"
+              LD_LIBRARY_PATH="$(rustc --print sysroot)/lib" \
+                ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
+                "$f" --crate-type bin --edition 2021 -D unsafe_scope || true
+              fail=1
+            fi
+          done
+          exit $fail

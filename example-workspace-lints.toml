@@ -14,6 +14,8 @@
 # Classic rules below; add project-specific lints on top.
 
 [workspace.lints.rust]
+# Idiomatic baseline (redundant imports, redundant crates in paths, ...).
+rust_2018_idioms = { level = "warn", priority = -1 }
 # `unsafe` blocks that contain nothing requiring unsafe (e.g. dereferencing
 # a plain `&T` inside `unsafe`). Keeps `unsafe` honest at the other end of
 # the spectrum from `unsafe_scope`.
@@ -29,6 +31,10 @@ unused_must_use = "deny"
 broken_intra_doc_links = "deny"
 
 [workspace.lints.clippy]
+# The whole default clippy group (correctness, suspicious, style,
+# complexity, perf). CI runs plain `cargo clippy -- -D warnings` in every
+# project, which is this plus default-level rustc lints.
+all = "deny"
 # At most one unsafe operation (unsafe call, raw deref, ...) per unsafe
 # block: `*buf.add(idx)` must be split via let-chaining.
 multiple_unsafe_ops_per_block = "deny"

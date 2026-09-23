@@ -25,6 +25,5 @@ fn rustc_sysroot() -> PathBuf {
             }
             Some(PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_string()))
         })
-        .map(PathBuf::from)
         .expect("failed to determine rustc sysroot")
 }

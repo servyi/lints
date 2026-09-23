@@ -6,8 +6,9 @@
 # `unsafe_scope` rule is NOT in this list — it comes from the lint driver in
 # this repository (see README) and runs as RUSTC_WRAPPER alongside clippy.
 #
-# CI is expected to run BOTH tools:
-#   * cargo clippy  --workspace --all-targets   (this list)
+# CI is expected to run BOTH tools, with `-D warnings` so default-level
+# lints fail too:
+#   * cargo clippy  --workspace --all-targets -- -D warnings
 #   * RUSTC_WRAPPER=unsafe-scope-lint cargo check --workspace --all-targets
 #
 # Classic rules below; add project-specific lints on top.
@@ -17,6 +18,9 @@
 # a plain `&T` inside `unsafe`). Keeps `unsafe` honest at the other end of
 # the spectrum from `unsafe_scope`.
 unused_unsafe = "deny"
+# Unsafe operations inside `unsafe fn` bodies must still be wrapped in an
+# explicit inner `unsafe` block.
+unsafe_op_in_unsafe_fn = "deny"
 # Unused results and ignored must-use values.
 unused_results = "deny"
 unused_must_use = "deny"
@@ -28,5 +32,12 @@ broken_intra_doc_links = "deny"
 # At most one unsafe operation (unsafe call, raw deref, ...) per unsafe
 # block: `*buf.add(idx)` must be split via let-chaining.
 multiple_unsafe_ops_per_block = "deny"
+# Every `unsafe` block carries a `// SAFETY:` comment explaining its
+# invariants.
+undocumented_unsafe_blocks = "deny"
 # Panicking via unwrap in library code.
 unwrap_used = "deny"
+# Leftover debugging / placeholder markers must not ship.
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"

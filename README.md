@@ -17,9 +17,12 @@ is the reusable list of clippy/rustc lints to deny everywhere; today:
 |---|---|
 | `clippy::multiple_unsafe_ops_per_block` | clippy |
 | `rustc::unused_unsafe` | rustc |
+| `rustc::unsafe_op_in_unsafe_fn` | rustc |
 | `rustc::unused_results` / `rustc::unused_must_use` | rustc |
 | `rustdoc::broken_intra_doc_links` | rustdoc |
+| `clippy::undocumented_unsafe_blocks` | clippy |
 | `clippy::unwrap_used` | clippy |
+| `clippy::dbg_macro` / `clippy::todo` / `clippy::unimplemented` | clippy |
 
 Copy the `[workspace.lints]` table into your workspace manifest and set
 `[lints] workspace = true` per crate; `cargo clippy` enforces it.

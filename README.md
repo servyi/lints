@@ -10,7 +10,7 @@ installable lint; see its README for usage.
 ## Shared lint list (classic rules)
 
 Classic rules are NOT re-implemented here — projects run **clippy + this
-driver** in every CI. [`example-workspace-lints.toml`](example-workspace-lints.toml)
+driver** in every CI. [`servyi-lints.toml`](servyi-lints.toml)
 is the reusable list of clippy/rustc lints to deny everywhere; today:
 
 | lint | tool |
@@ -46,7 +46,7 @@ step, always current (pin with `ref:` for reproducible runs):
           components: rustc-dev, clippy
       - run: cargo build --manifest-path lints/unsafe-scope-lint/Cargo.toml
       # classic rules: clippy with the shared list
-      - run: cp lints/example-workspace-lints.toml ./workspace-lints.toml
+      - run: cp lints/servyi-lints.toml ./workspace-lints.toml
       - run: >
           CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/clippy-check"
           cargo clippy --workspace --all-targets -- -D warnings

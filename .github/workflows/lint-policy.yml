@@ -80,10 +80,10 @@ jobs:
           workspaces: lints
       - name: build driver
         run: cargo build --manifest-path lints/unsafe-scope-lint/Cargo.toml
-      - name: cargo check under -D unsafe_scope
+      - name: cargo check under -D unsafe_scope -D workspace_lints_table
         run: >
           RUSTC_WRAPPER="$GITHUB_WORKSPACE/lints/unsafe-scope-lint/target/debug/unsafe-scope-lint"
-          RUSTFLAGS="-D unsafe_scope"
+          RUSTFLAGS="-D unsafe_scope -D workspace_lints_table"
           CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/unsafe-scope-check"
           cargo check --workspace --all-targets
 

@@ -1,5 +1,15 @@
 # unsafe-scope-lint
 
+Custom rustc lints for the shared Servyi policy, run as one
+`RUSTC_WRAPPER` driver:
+
+| lint | default | what it does |
+|---|---|---|
+| `unsafe_scope` | warn | strict shape of `unsafe` blocks (below) |
+| `workspace_lints_table` | warn | the workspace-level Cargo.toml defines no lints |
+
+## `unsafe_scope`
+
 A custom rustc lint (`unsafe_scope`) enforcing the strict shape of `unsafe`
 blocks: the block body may only
 
@@ -63,6 +73,25 @@ cargo check --workspace --all-targets
 ```
 
 Omit `-D` to see warnings without failing the build.
+
+## `workspace_lints_table`
+
+The shared Servyi lint policy is the explicit flag list the CI runs (see
+`../.github/workflows/lint-policy.yml`); lints configured in the
+workspace-level `Cargo.toml` are a second source of truth that silently
+drifts from it. The lint fires when the workspace-level manifest (the
+nearest ancestor with a `[workspace]` table, or the crate's own manifest
+when it stands alone) defines `[workspace.lints]` or a `[lints]` table
+beyond a plain `workspace = true` inheritance marker:
+
+```text
+warning: `Cargo.toml` defines lints; the workspace-level cargo.toml could
+         conflict with the actual CI toml, resulting in confusion
+```
+
+Only active under cargo (a bare `rustc` invocation has no manifest), and
+respects `--cap-lints`, so dependencies are never flagged. The
+`lint-policy.yml` driver job denies it: `-D workspace_lints_table`.
 
 ## Self-test
 

@@ -5,7 +5,8 @@ installable lint; see its README for usage.
 
 | lint | tool | what it does |
 |---|---|---|
-| [`unsafe-scope-lint/`](unsafe-scope-lint/README.md) | this repo (RUSTC_WRAPPER driver) | `unsafe` blocks may contain only reads of existing bindings plus a single operation that requires unsafe |
+| [`unsafe-scope-lint/`](unsafe-scope-lint/README.md) | this repo (RUSTC_WRAPPER driver) | `unsafe_scope`: `unsafe` blocks may contain only reads of existing bindings plus a single operation that requires unsafe |
+| | | `workspace_lints_table`: the workspace-level Cargo.toml must define no lints (they would drift from the CI flag list) |
 
 ## Shared lint policy (classic rules)
 

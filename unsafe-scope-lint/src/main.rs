@@ -38,7 +38,17 @@ declare_lint! {
     "unsafe block body must be binding reads plus a single unsafe operation"
 }
 
-impl_lint_pass!(UnsafeScope => [UNSAFE_SCOPE]);
+declare_lint! {
+    /// Checks that the workspace-level Cargo.toml defines no lint tables.
+    /// The shared Servyi policy is the explicit flag list the CI runs
+    /// (servyi/lints lint-policy.yml); a manifest table is a second place
+    /// to configure lints that silently drifts from it.
+    pub WORKSPACE_LINTS_TABLE,
+    Warn,
+    "the workspace-level Cargo.toml defines lints"
+}
+
+impl_lint_pass!(UnsafeScope => [UNSAFE_SCOPE, WORKSPACE_LINTS_TABLE]);
 
 struct LintCallbacks;
 
@@ -49,7 +59,7 @@ impl rustc_driver::Callbacks for LintCallbacks {
             if let Some(prev) = &previous {
                 prev(sess, store);
             }
-            store.register_lints(&[UNSAFE_SCOPE]);
+            store.register_lints(&[UNSAFE_SCOPE, WORKSPACE_LINTS_TABLE]);
             store.register_late_lint_pass(Box::new(|_| Box::new(UnsafeScope)));
         }));
     }
@@ -122,21 +132,21 @@ impl<'a, 'tcx> Visitor<'tcx> for LeafFinder<'a, 'tcx> {
     }
 
     fn visit_expr(&mut self, e: &'tcx hir::Expr<'tcx>) {
-        if let ExprKind::Block(b, _) = e.kind {
-            if matches!(b.rules, BlockCheckMode::UnsafeBlock(_)) {
-                // Contents of an inner unsafe block do not require the
-                // outer one.
-                let saved = self.inside_unsafe_block;
-                self.inside_unsafe_block = true;
-                intravisit::walk_block(self, b);
-                self.inside_unsafe_block = saved;
-                return;
-            }
+        if let ExprKind::Block(b, _) = e.kind
+            && matches!(b.rules, BlockCheckMode::UnsafeBlock(_))
+        {
+            // Contents of an inner unsafe block do not require the
+            // outer one.
+            let saved = self.inside_unsafe_block;
+            self.inside_unsafe_block = true;
+            intravisit::walk_block(self, b);
+            self.inside_unsafe_block = saved;
+            return;
         }
-        if let Some(kind) = self.classify(e) {
-            if !self.inside_unsafe_block {
-                self.leaves.push(UnsafeLeaf { hir_id: e.hir_id, kind });
-            }
+        if let Some(kind) = self.classify(e)
+            && !self.inside_unsafe_block
+        {
+            self.leaves.push(UnsafeLeaf { hir_id: e.hir_id, kind });
         }
         intravisit::walk_expr(self, e);
     }
@@ -192,14 +202,17 @@ impl<'a, 'tcx> LeafFinder<'a, 'tcx> {
     }
 }
 
+// Querying attributes by DefId: the parsed-attrs replacement for
+// `get_attrs` does not cover this shape on the pinned nightly.
+#[allow(deprecated)]
 fn is_unsafe_callee<'tcx>(cx: &LateContext<'tcx>, did: DefId) -> bool {
     let tcx = cx.tcx;
     tcx.fn_sig(did).skip_binder().safety().is_unsafe()
         || tcx.get_attrs(did, sym::target_feature).next().is_some()
 }
 
-fn leaves_in_expr<'a, 'tcx>(
-    cx: &'a LateContext<'tcx>,
+fn leaves_in_expr<'tcx>(
+    cx: &LateContext<'tcx>,
     e: &'tcx hir::Expr<'tcx>,
 ) -> Vec<UnsafeLeaf> {
     let mut f = LeafFinder { cx, leaves: Vec::new(), inside_unsafe_block: false };
@@ -207,8 +220,8 @@ fn leaves_in_expr<'a, 'tcx>(
     f.leaves
 }
 
-fn leaves_in_stmt<'a, 'tcx>(
-    cx: &'a LateContext<'tcx>,
+fn leaves_in_stmt<'tcx>(
+    cx: &LateContext<'tcx>,
     s: &'tcx hir::Stmt<'tcx>,
 ) -> Vec<UnsafeLeaf> {
     let mut f = LeafFinder { cx, leaves: Vec::new(), inside_unsafe_block: false };
@@ -376,6 +389,162 @@ fn check_leaf_operands<'tcx>(
 }
 
 // -----------------------------------------------------------------------------
+// Manifest hygiene: the workspace-level Cargo.toml must define no lints.
+
+/// Walk up from `manifest_dir` to the workspace-level Cargo.toml the way
+/// cargo does: skip directories without a manifest, stop at the nearest
+/// ancestor manifest with a `[workspace]` table (the workspace root), or
+/// at an ancestor package manifest without one (a nested package — the
+/// crate stands alone, its own manifest is the root). Return that
+/// manifest when it defines lints (`[workspace.lints]` or a `[lints]`
+/// table beyond a plain `workspace = true` inheritance marker).
+fn conflicting_workspace_manifest_from(
+    manifest_dir: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let mut own: Option<(std::path::PathBuf, toml::Table)> = None;
+    let mut dir = Some(manifest_dir);
+    while let Some(d) = dir {
+        let manifest = d.join("Cargo.toml");
+        if let Ok(src) = std::fs::read_to_string(&manifest)
+            && let Ok(cfg) = src.parse::<toml::Table>()
+        {
+            if cfg.contains_key("workspace") {
+                return defines_lints(&cfg).then_some(manifest);
+            }
+            if d == manifest_dir {
+                own = Some((manifest, cfg));
+            } else {
+                break; // nested package without [workspace]
+            }
+        }
+        dir = d.parent();
+    }
+    own.and_then(|(manifest, cfg)| defines_lints(&cfg).then_some(manifest))
+}
+
+fn defines_lints(cfg: &toml::Table) -> bool {
+    let workspace_lints = cfg
+        .get("workspace")
+        .and_then(|w| w.get("lints"))
+        .and_then(|l| l.as_table())
+        .is_some_and(|t| !t.is_empty());
+    let package_lints = cfg
+        .get("lints")
+        .and_then(|l| l.as_table())
+        .is_some_and(|t| !(t.len() == 1 && t.contains_key("workspace")));
+    workspace_lints || package_lints
+}
+
+fn conflicting_workspace_manifest() -> Option<std::path::PathBuf> {
+    // Only cargo sets this; plain rustc invocations have no manifest.
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR")?;
+    conflicting_workspace_manifest_from(std::path::Path::new(&manifest_dir))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::conflicting_workspace_manifest_from;
+    use std::path::{Path, PathBuf};
+
+    fn scratch(name: &str, files: &[(&str, &str)]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "unsafe-scope-lint-test-{}-{}",
+            name,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (rel, content) in files {
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, content).unwrap();
+        }
+        dir
+    }
+
+    fn member(dir: &Path) -> PathBuf {
+        dir.join("crates/foo")
+    }
+
+    #[test]
+    fn clean_workspace_is_silent() {
+        let dir = scratch(
+            "clean",
+            &[
+                ("Cargo.toml", "[workspace]\nmembers = [\"crates/foo\"]\n"),
+                ("crates/foo/Cargo.toml", "[package]\nname = \"foo\"\n"),
+            ],
+        );
+        assert!(conflicting_workspace_manifest_from(&member(&dir)).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workspace_lints_table_is_flagged() {
+        let dir = scratch(
+            "ws-lints",
+            &[
+                (
+                    "Cargo.toml",
+                    "[workspace]\nmembers = [\"crates/foo\"]\n\n[workspace.lints.rust]\nunused = \"deny\"\n",
+                ),
+                ("crates/foo/Cargo.toml", "[package]\nname = \"foo\"\n"),
+            ],
+        );
+        let hit = conflicting_workspace_manifest_from(&member(&dir)).unwrap();
+        assert_eq!(hit, dir.join("Cargo.toml"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn package_lints_in_root_are_flagged() {
+        let dir = scratch(
+            "pkg-lints",
+            &[
+                (
+                    "Cargo.toml",
+                    "[workspace]\nmembers = [\"crates/foo\"]\n\n[lints.rust]\nunused = \"deny\"\n",
+                ),
+                ("crates/foo/Cargo.toml", "[package]\nname = \"foo\"\n"),
+            ],
+        );
+        assert!(conflicting_workspace_manifest_from(&member(&dir)).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn single_crate_root_is_checked() {
+        let dir = scratch(
+            "single",
+            &[
+                ("src/main.rs", "fn main() {}\n"),
+                (
+                    "Cargo.toml",
+                    "[package]\nname = \"foo\"\n\n[lints.clippy]\nunwrap_used = \"deny\"\n",
+                ),
+            ],
+        );
+        let hit = conflicting_workspace_manifest_from(&dir).unwrap();
+        assert_eq!(hit, dir.join("Cargo.toml"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pure_inheritance_marker_is_not_a_definition() {
+        // A root manifest whose [lints] is only the inheritance marker is
+        // meaningless but harmless; only real definitions are flagged.
+        let dir = scratch(
+            "marker",
+            &[
+                ("Cargo.toml", "[package]\nname = \"foo\"\n\n[lints]\nworkspace = true\n"),
+                ("src/main.rs", "fn main() {}\n"),
+            ],
+        );
+        assert!(conflicting_workspace_manifest_from(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// -----------------------------------------------------------------------------
 // The pass
 //
 // Strict shape model: inside an `unsafe` block only
@@ -396,6 +565,28 @@ fn check_leaf_operands<'tcx>(
 pub struct UnsafeScope;
 
 impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
+    fn check_crate(&mut self, cx: &LateContext<'tcx>) {
+        // Skip where the lint is not active (`--cap-lints allow` for
+        // dependencies, `#[allow]`'d scopes).
+        let spec = cx.get_lint_level_spec(WORKSPACE_LINTS_TABLE);
+        if spec.is_allow() || spec.is_expect() {
+            return;
+        }
+        if let Some(manifest) = conflicting_workspace_manifest() {
+            cx.opt_span_lint(
+                WORKSPACE_LINTS_TABLE,
+                None::<rustc_span::Span>,
+                rustc_errors::DiagDecorator(|diag| {
+                    diag.note(format!(
+                        "`{}` defines lints; the workspace-level cargo.toml could conflict \
+                         with the actual CI toml, resulting in confusion",
+                        manifest.display()
+                    ));
+                }),
+            );
+        }
+    }
+
     fn check_expr(&mut self, cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) {
         let ExprKind::Block(b, _) = e.kind else { return };
         if !matches!(b.rules, BlockCheckMode::UnsafeBlock(UnsafeSource::UserProvided)) {

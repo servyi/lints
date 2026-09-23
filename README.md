@@ -5,13 +5,15 @@ installable lint; see its README for usage.
 
 | lint | tool | what it does |
 |---|---|---|
-| [`unsafe-scope-lint/`](unsafe-scope-lint/README.md) | this repo (RUSTC_WRAPPER driver) | `unsafe` blocks may contain only reads of existing bindings plus a single operation that requires unsafe |
+| [`unsafe-scope-lint/`](unsafe-scope-lint/README.md) | this repo (RUSTC_WRAPPER driver) | `unsafe_scope`: `unsafe` blocks may contain only reads of existing bindings plus a single operation that requires unsafe |
+| | | `workspace_lints_table`: the workspace-level Cargo.toml must define no lints (they would drift from the CI flag list) |
 
-## Shared lint list (classic rules)
+## Shared lint policy (classic rules)
 
 Classic rules are NOT re-implemented here — projects run **clippy + this
-driver** in every CI. [`servyi-lints.toml`](servyi-lints.toml)
-is the reusable list of clippy/rustc lints to deny everywhere; today:
+driver** in every CI. The policy lives as the explicit flag list in
+[`.github/workflows/lint-policy.yml`](.github/workflows/lint-policy.yml)
+(the single source of truth); today:
 
 | lint | tool |
 |---|---|
@@ -27,13 +29,27 @@ is the reusable list of clippy/rustc lints to deny everywhere; today:
 | `clippy::unwrap_used` / `clippy::panic` / `clippy::missing_panics_doc` | clippy |
 | `clippy::dbg_macro` / `clippy::todo` / `clippy::unimplemented` | clippy |
 
-Copy the `[workspace.lints]` table into your workspace manifest and set
-`[lints] workspace = true` per crate; `cargo clippy` enforces it.
+For the same enforcement in a local plain `cargo clippy`, copy the
+equivalent `[workspace.lints]` table into your workspace manifest and set
+`[lints] workspace = true` per crate. CI does not depend on that — it
+enforces the flags above directly.
 
-## Consuming the latest lints in any CI
+## Consuming the policy in any CI
 
-Check out this repo in the job and build the lint from source — no install
-step, always current (pin with `ref:` for reproducible runs):
+One job — reusable workflow, always current (pin `@main` to a sha or tag
+for reproducible runs):
+
+```yaml
+jobs:
+  lint-policy:
+    uses: servyi/lints/.github/workflows/lint-policy.yml@main
+```
+
+It runs clippy under the shared flag list, the `unsafe_scope` driver
+(built from source — no install step), and rustdoc link checks.
+
+To inline it instead, check out this repo in the job and build the lint
+from source:
 
 ```yaml
       - uses: actions/checkout@v4
@@ -45,8 +61,8 @@ step, always current (pin with `ref:` for reproducible runs):
           toolchain: nightly-2026-09-21
           components: rustc-dev, clippy
       - run: cargo build --manifest-path lints/unsafe-scope-lint/Cargo.toml
-      # classic rules: clippy with the shared list
-      - run: cp lints/servyi-lints.toml ./workspace-lints.toml
+      # classic rules: clippy with the shared flag list (see
+      # .github/workflows/lint-policy.yml in this repo)
       - run: >
           CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/clippy-check"
           cargo clippy --workspace --all-targets -- -D warnings

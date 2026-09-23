@@ -1,0 +1,112 @@
+name: lint-policy
+
+# Reusable CI for the shared Servyi lint policy. Consumer repos add:
+#
+#   jobs:
+#     lint-policy:
+#       uses: servyi/lints/.github/workflows/lint-policy.yml@main
+#
+# It fetches servyi-lints.toml from servyi/lints and enforces it with
+# clippy, runs the custom unsafe_scope rustc-driver lint, and checks
+# rustdoc links. Toolchain is the pinned nightly that the driver's
+# rustc_private build requires; stable-only projects compile the same on
+# it.
+
+on:
+  workflow_call:
+    inputs:
+      nightly:
+        description: "Pinned nightly for the unsafe-scope driver"
+        type: string
+        default: nightly-2026-09-21
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  clippy:
+    name: clippy (servyi-lints.toml)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check out the lint policy (pin with a ref for reproducibility)
+        uses: actions/checkout@v4
+        with:
+          repository: servyi/lints
+          ref: main
+          path: lints
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-09-21
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: translate servyi-lints.toml into clippy flags
+        run: |
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import re
+          flags = []
+          sec = None
+          for raw in open('lints/servyi-lints.toml'):
+              line = raw.split('#')[0].strip()
+              m = re.match(r'^\[workspace\.lints\.(rust|clippy|rustdoc)\]$', line)
+              if m:
+                  sec = m.group(1)
+                  continue
+              if line.startswith('['):
+                  sec = None
+                  continue
+              if sec == 'rustdoc':
+                  continue  # rustdoc lints run in the rustdoc job
+              m = re.match(r'^([A-Za-z0-9_]+)\s*=\s*"(deny|warn|forbid|expect)"', line)
+              if m:
+                  name, level = m.groups()
+                  prefix = 'clippy::' if sec == 'clippy' else ''
+                  flags.append(f'-{level[0]} {prefix}{name}')
+                  continue
+              m = re.match(r'^([A-Za-z0-9_]+)\s*=\s*\{\s*level\s*=\s*"(deny|warn|forbid|expect)"', line)
+              if m:
+                  name, level = m.groups()
+                  flags.append(f'-{level[0]} {name}')
+          print('LINT_FLAGS=' + ' '.join(flags))
+          PY
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings ${{ env.LINT_FLAGS }}
+
+  unsafe-scope:
+    name: unsafe_scope (driver)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check out the lint collection (pin with a ref for reproducibility)
+        uses: actions/checkout@v4
+        with:
+          repository: servyi/lints
+          ref: main
+          path: lints
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-09-21
+          components: rustc-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: lints
+      - name: build driver
+        run: cargo build --manifest-path lints/unsafe-scope-lint/Cargo.toml
+      - name: cargo check under -D unsafe_scope
+        run: >
+          RUSTC_WRAPPER="$GITHUB_WORKSPACE/lints/unsafe-scope-lint/target/debug/unsafe-scope-lint"
+          RUSTFLAGS="-D unsafe_scope"
+          CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/unsafe-scope-check"
+          cargo check --workspace --all-targets
+
+  rustdoc:
+    name: rustdoc links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo doc with link checking
+        run: >
+          RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links"
+          cargo doc --no-deps

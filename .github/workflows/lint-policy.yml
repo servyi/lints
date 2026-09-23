@@ -6,11 +6,14 @@ name: lint-policy
 #     lint-policy:
 #       uses: servyi/lints/.github/workflows/lint-policy.yml@main
 #
-# It fetches servyi-lints.toml from servyi/lints and enforces it with
-# clippy, runs the custom unsafe_scope rustc-driver lint, and checks
-# rustdoc links. Toolchain is the pinned nightly that the driver's
-# rustc_private build requires; stable-only projects compile the same on
-# it.
+# Consumers commit the [workspace.lints] table from servyi-lints.toml
+# into their Cargo.toml (see that file's header), so a local
+# `cargo clippy` enforces the policy natively. This workflow verifies
+# the committed table matches servyi/lints@main, runs clippy under
+# the table's own levels, runs the custom unsafe_scope rustc-driver
+# lint, and checks rustdoc links. Toolchain is the pinned nightly
+# that the driver's rustc_private build requires; stable-only
+# projects compile the same on it.
 
 on:
   workflow_call:
@@ -40,21 +43,21 @@ jobs:
           toolchain: nightly-2026-09-21
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: translate servyi-lints.toml into clippy flags
+      - name: verify the committed lint table matches servyi-lints.toml
         run: |
-          python3 - <<'PY' >> "$GITHUB_ENV"
-          import tomllib
-          lints = tomllib.load(open('lints/servyi-lints.toml', 'rb'))['workspace']['lints']
-          # rustdoc lints run in the rustdoc job, not here.
-          parts = []
-          for group, prefix in (('rust', ''), ('clippy', 'clippy::')):
-              for name, rule in lints.get(group, {}).items():
-                  level = rule if isinstance(rule, str) else rule['level']
-                  parts.append(f"-{level[0].upper()} {prefix}{name}")
-          print('LINT_FLAGS=' + ' '.join(parts))
+          python3 - <<'PY'
+          import sys, tomllib
+          canonical = tomllib.load(open('lints/servyi-lints.toml', 'rb'))['workspace']['lints']
+          manifest = tomllib.load(open('Cargo.toml', 'rb'))
+          committed = manifest.get('workspace', {}).get('lints') or manifest.get('lints')
+          if committed != canonical:
+              print('committed lint table differs from servyi/lints servyi-lints.toml:')
+              print('  canonical:', canonical)
+              print('  committed:', committed)
+              sys.exit(1)
           PY
-      - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings ${{ env.LINT_FLAGS }}
+      - name: clippy (levels come from the committed lint table)
+        run: cargo clippy --workspace --all-targets
 
   unsafe-scope:
     name: unsafe_scope (driver)

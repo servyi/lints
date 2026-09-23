@@ -1,0 +1,26 @@
+/target/
+*.rs.bk
+
+# compiled fixture binaries (rustc writes crate-named output to CWD)
+binary_compare
+binary_plus
+closure_body
+compound_assign
+compound_assign_const
+deref_of_safe_ref
+exact_call
+exact_deref
+fn_ptr_call
+let_chain_split
+method_chain
+padding_stmt
+place_assign
+place_assign_const
+place_borrow
+safe_call_arg
+safe_fn_unsafe_arg
+static_mut_rvalue
+transmute_pipeline
+unsafe_fn_complex_args
+unsafe_fn_computed_arg
+unsafe_ptr_chain

@@ -30,7 +30,7 @@ count as unsafe operations; `&*p`, `(*p).f`, `*p = v` and `*p += v` are
 recognized as single place-operations on binding reads.
 
 Out of scope on purpose (classic rules live in rustc/clippy — see
-[`example-workspace-lints.toml`](../example-workspace-lints.toml), run both
+[`servyi-lints.toml`](../servyi-lints.toml), run both
 tools in CI):
 
 * blocks containing no operation that requires unsafe at all →

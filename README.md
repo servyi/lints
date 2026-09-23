@@ -10,16 +10,22 @@ installable lint; see its README for usage.
 ## Shared lint list (classic rules)
 
 Classic rules are NOT re-implemented here — projects run **clippy + this
-driver** in every CI. [`example-workspace-lints.toml`](example-workspace-lints.toml)
+driver** in every CI. [`servyi-lints.toml`](servyi-lints.toml)
 is the reusable list of clippy/rustc lints to deny everywhere; today:
 
 | lint | tool |
 |---|---|
+| `clippy::all` | clippy |
 | `clippy::multiple_unsafe_ops_per_block` | clippy |
 | `rustc::unused_unsafe` | rustc |
+| `rustc::unsafe_op_in_unsafe_fn` | rustc |
 | `rustc::unused_results` / `rustc::unused_must_use` | rustc |
+| `rustc::non_ascii_idents` | rustc |
+| `rustc::rust_2018_idioms` (warn) | rustc |
 | `rustdoc::broken_intra_doc_links` | rustdoc |
-| `clippy::unwrap_used` | clippy |
+| `clippy::undocumented_unsafe_blocks` | clippy |
+| `clippy::unwrap_used` / `clippy::panic` / `clippy::missing_panics_doc` | clippy |
+| `clippy::dbg_macro` / `clippy::todo` / `clippy::unimplemented` | clippy |
 
 Copy the `[workspace.lints]` table into your workspace manifest and set
 `[lints] workspace = true` per crate; `cargo clippy` enforces it.
@@ -40,7 +46,7 @@ step, always current (pin with `ref:` for reproducible runs):
           components: rustc-dev, clippy
       - run: cargo build --manifest-path lints/unsafe-scope-lint/Cargo.toml
       # classic rules: clippy with the shared list
-      - run: cp lints/example-workspace-lints.toml ./workspace-lints.toml
+      - run: cp lints/servyi-lints.toml ./workspace-lints.toml
       - run: >
           CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/clippy-check"
           cargo clippy --workspace --all-targets -- -D warnings

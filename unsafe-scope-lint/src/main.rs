@@ -132,21 +132,21 @@ impl<'a, 'tcx> Visitor<'tcx> for LeafFinder<'a, 'tcx> {
     }
 
     fn visit_expr(&mut self, e: &'tcx hir::Expr<'tcx>) {
-        if let ExprKind::Block(b, _) = e.kind {
-            if matches!(b.rules, BlockCheckMode::UnsafeBlock(_)) {
-                // Contents of an inner unsafe block do not require the
-                // outer one.
-                let saved = self.inside_unsafe_block;
-                self.inside_unsafe_block = true;
-                intravisit::walk_block(self, b);
-                self.inside_unsafe_block = saved;
-                return;
-            }
+        if let ExprKind::Block(b, _) = e.kind
+            && matches!(b.rules, BlockCheckMode::UnsafeBlock(_))
+        {
+            // Contents of an inner unsafe block do not require the
+            // outer one.
+            let saved = self.inside_unsafe_block;
+            self.inside_unsafe_block = true;
+            intravisit::walk_block(self, b);
+            self.inside_unsafe_block = saved;
+            return;
         }
-        if let Some(kind) = self.classify(e) {
-            if !self.inside_unsafe_block {
-                self.leaves.push(UnsafeLeaf { hir_id: e.hir_id, kind });
-            }
+        if let Some(kind) = self.classify(e)
+            && !self.inside_unsafe_block
+        {
+            self.leaves.push(UnsafeLeaf { hir_id: e.hir_id, kind });
         }
         intravisit::walk_expr(self, e);
     }
@@ -202,14 +202,17 @@ impl<'a, 'tcx> LeafFinder<'a, 'tcx> {
     }
 }
 
+// Querying attributes by DefId: the parsed-attrs replacement for
+// `get_attrs` does not cover this shape on the pinned nightly.
+#[allow(deprecated)]
 fn is_unsafe_callee<'tcx>(cx: &LateContext<'tcx>, did: DefId) -> bool {
     let tcx = cx.tcx;
     tcx.fn_sig(did).skip_binder().safety().is_unsafe()
         || tcx.get_attrs(did, sym::target_feature).next().is_some()
 }
 
-fn leaves_in_expr<'a, 'tcx>(
-    cx: &'a LateContext<'tcx>,
+fn leaves_in_expr<'tcx>(
+    cx: &LateContext<'tcx>,
     e: &'tcx hir::Expr<'tcx>,
 ) -> Vec<UnsafeLeaf> {
     let mut f = LeafFinder { cx, leaves: Vec::new(), inside_unsafe_block: false };
@@ -217,8 +220,8 @@ fn leaves_in_expr<'a, 'tcx>(
     f.leaves
 }
 
-fn leaves_in_stmt<'a, 'tcx>(
-    cx: &'a LateContext<'tcx>,
+fn leaves_in_stmt<'tcx>(
+    cx: &LateContext<'tcx>,
     s: &'tcx hir::Stmt<'tcx>,
 ) -> Vec<UnsafeLeaf> {
     let mut f = LeafFinder { cx, leaves: Vec::new(), inside_unsafe_block: false };
@@ -402,16 +405,16 @@ fn conflicting_workspace_manifest_from(
     let mut dir = Some(manifest_dir);
     while let Some(d) = dir {
         let manifest = d.join("Cargo.toml");
-        if let Ok(src) = std::fs::read_to_string(&manifest) {
-            if let Ok(cfg) = src.parse::<toml::Table>() {
-                if cfg.contains_key("workspace") {
-                    return defines_lints(&cfg).then_some(manifest);
-                }
-                if d == manifest_dir {
-                    own = Some((manifest, cfg));
-                } else {
-                    break; // nested package without [workspace]
-                }
+        if let Ok(src) = std::fs::read_to_string(&manifest)
+            && let Ok(cfg) = src.parse::<toml::Table>()
+        {
+            if cfg.contains_key("workspace") {
+                return defines_lints(&cfg).then_some(manifest);
+            }
+            if d == manifest_dir {
+                own = Some((manifest, cfg));
+            } else {
+                break; // nested package without [workspace]
             }
         }
         dir = d.parent();

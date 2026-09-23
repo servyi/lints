@@ -6,14 +6,14 @@ name: lint-policy
 #     lint-policy:
 #       uses: servyi/lints/.github/workflows/lint-policy.yml@main
 #
-# Consumers commit the [workspace.lints] table from servyi-lints.toml
-# into their Cargo.toml (see that file's header), so a local
-# `cargo clippy` enforces the policy natively. This workflow verifies
-# the committed table matches servyi/lints@main, runs clippy under
-# the table's own levels, runs the custom unsafe_scope rustc-driver
-# lint, and checks rustdoc links. Toolchain is the pinned nightly
-# that the driver's rustc_private build requires; stable-only
-# projects compile the same on it.
+# The policy lives HERE, as the explicit clippy flag list below — the
+# single source of truth. Repos that also want a local plain
+# `cargo clippy` to enforce it can copy the equivalent [workspace.lints]
+# table into their manifest (see README), but CI does not depend on
+# that. This workflow runs clippy under the explicit flags, the custom
+# unsafe_scope rustc-driver lint, and rustdoc link checks. Toolchain is
+# the pinned nightly that the driver's rustc_private build requires;
+# stable-only projects compile the same on it.
 
 on:
   workflow_call:
@@ -28,36 +28,37 @@ env:
 
 jobs:
   clippy:
-    name: clippy (servyi-lints.toml)
+    name: clippy (shared policy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: check out the lint policy (pin with a ref for reproducibility)
-        uses: actions/checkout@v4
-        with:
-          repository: servyi/lints
-          ref: main
-          path: lints
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-09-21
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: verify the committed lint table matches servyi-lints.toml
-        run: |
-          python3 - <<'PY'
-          import sys, tomllib
-          canonical = tomllib.load(open('lints/servyi-lints.toml', 'rb'))['workspace']['lints']
-          manifest = tomllib.load(open('Cargo.toml', 'rb'))
-          committed = manifest.get('workspace', {}).get('lints') or manifest.get('lints')
-          if committed != canonical:
-              print('committed lint table differs from servyi/lints servyi-lints.toml:')
-              print('  canonical:', canonical)
-              print('  committed:', committed)
-              sys.exit(1)
-          PY
-      - name: clippy (levels come from the committed lint table)
-        run: cargo clippy --workspace --all-targets
+      # The shared Servyi lint policy. rust_2018_idioms stays at warn
+      # (everything else denies): a warning there is advice, not a
+      # failure — that is why it sits after -D warnings.
+      - name: clippy
+        run: >
+          cargo clippy --workspace --all-targets --
+          -D warnings
+          -W rust_2018_idioms
+          -D unused_unsafe
+          -D unsafe_op_in_unsafe_fn
+          -D unused_results
+          -D unused_must_use
+          -D non_ascii_idents
+          -D clippy::all
+          -D clippy::multiple_unsafe_ops_per_block
+          -D clippy::undocumented_unsafe_blocks
+          -D clippy::unwrap_used
+          -D clippy::panic
+          -D clippy::missing_panics_doc
+          -D clippy::dbg_macro
+          -D clippy::todo
+          -D clippy::unimplemented
 
   unsafe-scope:
     name: unsafe_scope (driver)

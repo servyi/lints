@@ -29,9 +29,9 @@ Type-aware: raw-pointer derefs, unsafe fn/method/`FnPtr` calls,
 count as unsafe operations; `&*p`, `(*p).f`, `*p = v` and `*p += v` are
 recognized as single place-operations on binding reads.
 
-Out of scope on purpose (classic rules live in rustc/clippy — see
-[`servyi-lints.toml`](../servyi-lints.toml), run both
-tools in CI):
+Out of scope on purpose (classic rules live in rustc/clippy — see the
+shared flag list in [`lint-policy.yml`](../.github/workflows/lint-policy.yml),
+run both tools in CI):
 
 * blocks containing no operation that requires unsafe at all →
   `rustc::unused_unsafe`;

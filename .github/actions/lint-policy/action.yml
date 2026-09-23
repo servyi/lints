@@ -1,0 +1,71 @@
+name: Servyi lint policy
+description: >-
+  Clippy under the shared flag list, the unsafe_scope driver, and
+  rustdoc link checks. Runs inside the caller's job: install any
+  native dependencies the project needs BEFORE this action, exactly
+  like for your own build/test jobs.
+
+runs:
+  using: composite
+  steps:
+    # ── clippy under the shared flag list ─────────────────────────
+    # The policy lives HERE, as the explicit clippy flag list below —
+    # the single source of truth. rust_2018_idioms stays at warn
+    # (everything else denies): a warning there is advice, not a
+    # failure — that is why it sits after -D warnings.
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly-2026-09-21
+        components: clippy
+    - name: clippy (shared policy)
+      shell: bash
+      run: >
+        CARGO_TARGET_DIR="$PWD/target/servyi-lints-clippy"
+        cargo +nightly-2026-09-21 clippy --workspace --all-targets --
+        -D warnings
+        -W rust_2018_idioms
+        -D unused_unsafe
+        -D unsafe_op_in_unsafe_fn
+        -D unused_results
+        -D unused_must_use
+        -D non_ascii_idents
+        -D clippy::all
+        -D clippy::multiple_unsafe_ops_per_block
+        -D clippy::undocumented_unsafe_blocks
+        -D clippy::unwrap_used
+        -D clippy::panic
+        -D clippy::missing_panics_doc
+        -D clippy::dbg_macro
+        -D clippy::todo
+        -D clippy::unimplemented
+
+    # ── the unsafe_scope driver ────────────────────────────────────
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly-2026-09-21
+        components: rustc-dev
+    - name: check out the lint collection
+      uses: actions/checkout@v4
+      with:
+        repository: servyi/lints   # add `ref: <sha or tag>` to pin
+        ref: main
+        path: .servyi-lints
+    - name: build the driver
+      shell: bash
+      run: cargo +nightly-2026-09-21 build --manifest-path .servyi-lints/unsafe-scope-lint/Cargo.toml
+    - name: cargo check under -D unsafe_scope -D workspace_lints_table
+      shell: bash
+      run: >
+        RUSTC_WRAPPER="$PWD/.servyi-lints/unsafe-scope-lint/target/debug/unsafe-scope-lint"
+        RUSTFLAGS="-D unsafe_scope -D workspace_lints_table"
+        CARGO_TARGET_DIR="$PWD/target/servyi-lints-driver"
+        cargo +nightly-2026-09-21 check --workspace --all-targets
+
+    # ── rustdoc link checks ────────────────────────────────────────
+    - uses: dtolnay/rust-toolchain@stable
+    - name: cargo doc with link checking
+      shell: bash
+      run: >
+        RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links"
+        CARGO_TARGET_DIR="$PWD/target/servyi-lints-doc"
+        cargo +stable doc --no-deps

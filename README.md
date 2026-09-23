@@ -12,7 +12,7 @@ installable lint; see its README for usage.
 
 Classic rules are NOT re-implemented here — projects run **clippy + this
 driver** in every CI. The policy lives as the explicit flag list in
-[`.github/workflows/lint-policy.yml`](.github/workflows/lint-policy.yml)
+[`.github/actions/lint-policy/action.yml`](.github/actions/lint-policy/action.yml)
 (the single source of truth); today:
 
 | lint | tool |
@@ -36,17 +36,24 @@ enforces the flags above directly.
 
 ## Consuming the policy in any CI
 
-One job — reusable workflow, always current (pin `@main` to a sha or tag
-for reproducible runs):
+One step inside your own job (pin `@main` to a sha or tag for
+reproducible runs):
 
 ```yaml
 jobs:
   lint-policy:
-    uses: servyi/lints/.github/workflows/lint-policy.yml@main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # native dependencies your project needs, exactly like for your
+      # own build/test jobs
+      # - run: sudo apt-get install -y pkg-config libfuse3-dev
+      - uses: servyi/lints/.github/actions/lint-policy@main
 ```
 
 It runs clippy under the shared flag list, the `unsafe_scope` driver
-(built from source — no install step), and rustdoc link checks.
+(built from source — no install step), and rustdoc link checks — in
+your job's environment, with your native deps.
 
 To inline it instead, check out this repo in the job and build the lint
 from source:
@@ -62,7 +69,7 @@ from source:
           components: rustc-dev, clippy
       - run: cargo build --manifest-path lints/unsafe-scope-lint/Cargo.toml
       # classic rules: clippy with the shared flag list (see
-      # .github/workflows/lint-policy.yml in this repo)
+      # .github/actions/lint-policy/action.yml in this repo)
       - run: >
           CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/clippy-check"
           cargo clippy --workspace --all-targets -- -D warnings

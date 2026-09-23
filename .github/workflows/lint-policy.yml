@@ -61,12 +61,12 @@ jobs:
               if m:
                   name, level = m.groups()
                   prefix = 'clippy::' if sec == 'clippy' else ''
-                  flags.append(f'-{level[0]} {prefix}{name}')
+                  flags.append(f'-{level[0].upper()} {prefix}{name}')
                   continue
               m = re.match(r'^([A-Za-z0-9_]+)\s*=\s*\{\s*level\s*=\s*"(deny|warn|forbid|expect)"', line)
               if m:
                   name, level = m.groups()
-                  flags.append(f'-{level[0]} {name}')
+                  flags.append(f'-{level[0].upper()} {name}')
           print('LINT_FLAGS=' + ' '.join(flags))
           PY
       - name: clippy

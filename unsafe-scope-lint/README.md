@@ -40,7 +40,7 @@ count as unsafe operations; `&*p`, `(*p).f`, `*p = v` and `*p += v` are
 recognized as single place-operations on binding reads.
 
 Out of scope on purpose (classic rules live in rustc/clippy — see the
-shared flag list in [`lint-policy.yml`](../.github/workflows/lint-policy.yml),
+shared flag list in [`action.yml`](../.github/actions/lint-policy/action.yml),
 run both tools in CI):
 
 * blocks containing no operation that requires unsafe at all →
@@ -77,7 +77,7 @@ Omit `-D` to see warnings without failing the build.
 ## `workspace_lints_table`
 
 The shared Servyi lint policy is the explicit flag list the CI runs (see
-`../.github/workflows/lint-policy.yml`); lints configured in the
+`../.github/actions/lint-policy/action.yml`); lints configured in the
 workspace-level `Cargo.toml` are a second source of truth that silently
 drifts from it. The lint fires when the workspace-level manifest (the
 nearest ancestor with a `[workspace]` table, or the crate's own manifest
@@ -91,7 +91,7 @@ warning: `Cargo.toml` defines lints; the workspace-level cargo.toml could
 
 Only active under cargo (a bare `rustc` invocation has no manifest), and
 respects `--cap-lints`, so dependencies are never flagged. The
-`lint-policy.yml` driver job denies it: `-D workspace_lints_table`.
+`lint-policy` action denies it: `-D workspace_lints_table`.
 
 ## Self-test
 

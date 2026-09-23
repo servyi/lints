@@ -1,7 +1,7 @@
 // Bad case for the shared clippy/rustc lint list, NOT for `unsafe_scope`:
 // `add_ref` returns a plain `&u32`, so the block performs no operation that
 // requires unsafe. rustc's `unused_unsafe` forbids it (see the shared flag
-// list in .github/workflows/lint-policy.yml); `unsafe_scope` deliberately
+// list in .github/actions/lint-policy/action.yml); `unsafe_scope` deliberately
 // passes this file.
 fn add_ref(v: &[u32], idx: usize) -> &u32 {
     &v[idx]

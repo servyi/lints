@@ -20,10 +20,11 @@ is the reusable list of clippy/rustc lints to deny everywhere; today:
 | `rustc::unused_unsafe` | rustc |
 | `rustc::unsafe_op_in_unsafe_fn` | rustc |
 | `rustc::unused_results` / `rustc::unused_must_use` | rustc |
+| `rustc::non_ascii_idents` | rustc |
 | `rustc::rust_2018_idioms` (warn) | rustc |
 | `rustdoc::broken_intra_doc_links` | rustdoc |
 | `clippy::undocumented_unsafe_blocks` | clippy |
-| `clippy::unwrap_used` | clippy |
+| `clippy::unwrap_used` / `clippy::panic` / `clippy::missing_panics_doc` | clippy |
 | `clippy::dbg_macro` / `clippy::todo` / `clippy::unimplemented` | clippy |
 
 Copy the `[workspace.lints]` table into your workspace manifest and set

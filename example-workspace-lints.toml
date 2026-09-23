@@ -26,6 +26,8 @@ unsafe_op_in_unsafe_fn = "deny"
 # Unused results and ignored must-use values.
 unused_results = "deny"
 unused_must_use = "deny"
+# Identifiers are ASCII: catches homoglyph look-alikes at zero cost.
+non_ascii_idents = "deny"
 
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
@@ -41,8 +43,13 @@ multiple_unsafe_ops_per_block = "deny"
 # Every `unsafe` block carries a `// SAFETY:` comment explaining its
 # invariants.
 undocumented_unsafe_blocks = "deny"
-# Panicking via unwrap in library code.
+# Panicking via unwrap or bare `panic!` in library code — fail with
+# `.expect("why this must succeed")` or a typed error instead. Projects
+# exempt tests via `#![cfg_attr(test, allow(...))]` as needed.
 unwrap_used = "deny"
+panic = "deny"
+# Public functions that can panic must document it ("# Panics" section).
+missing_panics_doc = "deny"
 # Leftover debugging / placeholder markers must not ship.
 dbg_macro = "deny"
 todo = "deny"

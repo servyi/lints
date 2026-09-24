@@ -7,6 +7,7 @@ Custom rustc lints for the shared Servyi policy, run as one
 |---|---|---|
 | `unsafe_scope` | warn | strict shape of `unsafe` blocks (below) |
 | `workspace_lints_table` | warn | the workspace-level Cargo.toml defines no lints |
+| `non_test_panic_allow` | warn | `#[allow]`/`#[expect]` of `clippy::panic`/`clippy::unwrap_used` outside test code |
 
 ## `unsafe_scope`
 
@@ -92,6 +93,24 @@ warning: `Cargo.toml` defines lints; the workspace-level cargo.toml could
 Only active under cargo (a bare `rustc` invocation has no manifest), and
 respects `--cap-lints`, so dependencies are never flagged. The
 `lint-policy` action denies it: `-D workspace_lints_table`.
+
+## `non_test_panic_allow`
+
+A panicking test IS the failure signal, so silencing `clippy::panic` /
+`clippy::unwrap_used` is a test-only exemption. The lint fires on bare
+`#[allow]`/`#[expect]` of those lints in non-test compilations:
+
+```text
+warning: `allow(unwrap_used)` silences the panic policy outside test code:
+         a panicking test is the failure signal, but production code must
+         handle or propagate the case instead; gate exemptions with
+         `cfg_attr(test, ...)` or move them into `#[cfg(test)]` code
+```
+
+The sanctioned forms never trip it: without `--test`, `cfg_attr(test, ...)`
+is not expanded and `#[cfg(test)]` modules are not compiled at all;
+integration-test targets compile with `--test`. The `lint-policy` action
+denies it: `-D non_test_panic_allow`.
 
 ## Self-test
 

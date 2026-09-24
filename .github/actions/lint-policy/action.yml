@@ -53,11 +53,11 @@ runs:
     - name: build the driver
       shell: bash
       run: cargo +nightly-2026-09-21 build --manifest-path .servyi-lints/unsafe-scope-lint/Cargo.toml
-    - name: cargo check under -D unsafe_scope -D workspace_lints_table
+    - name: cargo check under -D unsafe_scope -D workspace_lints_table -D non_test_panic_allow
       shell: bash
       run: >
         RUSTC_WRAPPER="$PWD/.servyi-lints/unsafe-scope-lint/target/debug/unsafe-scope-lint"
-        RUSTFLAGS="-D unsafe_scope -D workspace_lints_table"
+        RUSTFLAGS="-D unsafe_scope -D workspace_lints_table -D non_test_panic_allow"
         CARGO_TARGET_DIR="$PWD/target/servyi-lints-driver"
         cargo +nightly-2026-09-21 check --workspace --all-targets
 

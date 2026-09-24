@@ -27,7 +27,7 @@ jobs:
           fail=0
           for f in tests/bad/unsafe_scope/*.rs; do
             ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
-              "$f" --crate-type bin --edition 2021 -D unsafe_scope >/dev/null 2>&1
+              "$f" --crate-type bin --edition 2021 -D unsafe_scope -D non_test_panic_allow >/dev/null 2>&1
             rc=$?
             if [ "$rc" -eq 0 ]; then echo "FAIL: $f was not caught"; fail=1; fi
           done
@@ -38,7 +38,7 @@ jobs:
           fail=0
           for f in tests/bad/clippy/*.rs; do
             ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
-              "$f" --crate-type bin --edition 2021 -D unsafe_scope >/dev/null 2>&1
+              "$f" --crate-type bin --edition 2021 -D unsafe_scope -D non_test_panic_allow >/dev/null 2>&1
             rc=$?
             if [ "$rc" -ne 0 ]; then echo "FAIL: $f is not unsafe_scope's job"; fail=1; fi
           done
@@ -61,12 +61,12 @@ jobs:
           fail=0
           for f in tests/good/*.rs; do
             ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
-              "$f" --crate-type bin --edition 2021 -D unsafe_scope >/dev/null 2>&1
+              "$f" --crate-type bin --edition 2021 -D unsafe_scope -D non_test_panic_allow >/dev/null 2>&1
             rc=$?
             if [ "$rc" -ne 0 ]; then
               echo "FAIL: $f produced a false positive in the driver"
               ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
-                "$f" --crate-type bin --edition 2021 -D unsafe_scope || true
+                "$f" --crate-type bin --edition 2021 -D unsafe_scope -D non_test_panic_allow || true
               fail=1
             fi
             clippy-driver "$f" --crate-type bin --edition 2021 \

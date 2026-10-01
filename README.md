@@ -8,6 +8,7 @@ installable lint; see its README for usage.
 | [`unsafe-scope-lint/`](unsafe-scope-lint/README.md) | this repo (RUSTC_WRAPPER driver) | `unsafe_scope`: `unsafe` blocks may contain only reads of existing bindings plus a single operation that requires unsafe |
 | | | `workspace_lints_table`: the workspace-level Cargo.toml must define no lints (they would drift from the CI flag list) |
 | | | `non_test_panic_allow`: `#[allow]`/`#[expect]` of `clippy::panic`/`clippy::unwrap_used` outside test code — tests are the only sanctioned exemption (`cfg_attr(test, ...)`, `#[cfg(test)]` modules, integration tests) |
+| | | `unsound_constructor`: types marked `#[servyi::unsound_constructor]` (requires `#![register_tool(servyi)]`) must document the constructor's safety preconditions in a `/// SAFETY` comment above the struct, and every construction site must argue them in a `// SAFETY` comment directly above the literal |
 
 ## Shared lint policy (classic rules)
 

@@ -52,6 +52,20 @@ declare_lint! {
 }
 
 declare_lint! {
+    /// `#[unsound_constructor]` on a type marks its constructor (a struct
+    /// literal) as unsound from safe code: constructing it can create
+    /// aliasing references without any `unsafe` block at the site. The
+    /// attribute is only legal together with (a) a `/// SAFETY` comment
+    /// right above the struct explaining the constructor's safety
+    /// preconditions, and (b) a `// SAFETY` comment directly inside every
+    /// place that constructs the type, arguing why those preconditions
+    /// hold there. This lint enforces both.
+    pub UNSOUND_CONSTRUCTOR,
+    Warn,
+    "construction of an #[unsound_constructor] type must carry SAFETY comments"
+}
+
+declare_lint! {
     /// Checks that the workspace-level Cargo.toml defines no lint tables.
     /// The shared Servyi policy is the explicit flag list the CI runs
     /// (servyi/lints lint-policy.yml); a manifest table is a second place
@@ -61,7 +75,7 @@ declare_lint! {
     "the workspace-level Cargo.toml defines lints"
 }
 
-impl_lint_pass!(UnsafeScope => [UNSAFE_SCOPE, WORKSPACE_LINTS_TABLE, NON_TEST_PANIC_ALLOW]);
+impl_lint_pass!(UnsafeScope => [UNSAFE_SCOPE, UNSOUND_CONSTRUCTOR, WORKSPACE_LINTS_TABLE, NON_TEST_PANIC_ALLOW]);
 
 struct LintCallbacks;
 
@@ -72,8 +86,8 @@ impl rustc_driver::Callbacks for LintCallbacks {
             if let Some(prev) = &previous {
                 prev(sess, store);
             }
-            store.register_lints(&[UNSAFE_SCOPE, WORKSPACE_LINTS_TABLE, NON_TEST_PANIC_ALLOW]);
-            store.register_late_lint_pass(Box::new(|_| Box::new(UnsafeScope)));
+            store.register_lints(&[UNSAFE_SCOPE, UNSOUND_CONSTRUCTOR, WORKSPACE_LINTS_TABLE, NON_TEST_PANIC_ALLOW]);
+            store.register_late_lint_pass(Box::new(|_| Box::new(UnsafeScope { unsound_types: Vec::new() })));
         }));
     }
 }
@@ -120,6 +134,38 @@ fn main() {
     .map(|()| 0)
     .unwrap_or(101);
     std::process::exit(exit_code);
+}
+
+impl UnsafeScope {
+    /// True when a `// SAFETY` comment sits in the contiguous comment block
+    /// directly above `span` (same heuristics family as clippy's
+    /// undocumented_unsafe_blocks).
+    fn has_safety_comment(&self, cx: &LateContext<'_>, span: rustc_span::Span) -> bool {
+        let sm = cx.tcx.sess.source_map();
+        let snippet = match sm.span_to_prev_source(span) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        // The contiguous comment block directly above the span: walk the
+        // previous lines bottom-up, skipping blanks and attributes; a
+        // SAFETY comment anywhere in that block satisfies the requirement.
+        let mut saw_comment = false;
+        for line in snippet.lines().rev() {
+            let text = line.trim_start();
+            if text.is_empty() || text.starts_with("#[") || text.starts_with("#![") {
+                continue;
+            }
+            if text.starts_with("//") {
+                saw_comment = true;
+                if text.contains("SAFETY") {
+                    return true;
+                }
+                continue;
+            }
+            break;
+        }
+        saw_comment
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -575,7 +621,12 @@ mod tests {
 // Blocks containing no operation that requires unsafe at all are left to
 // rustc's builtin `unused_unsafe` lint.
 
-pub struct UnsafeScope;
+pub struct UnsafeScope {
+    /// DefIds of structs marked #[servyi::unsound_constructor], collected
+    /// by `check_item` (which the HIR traversal visits before the bodies
+    /// that construct them).
+    unsound_types: Vec<DefId>,
+}
 
 impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
     fn check_crate(&mut self, cx: &LateContext<'tcx>) {
@@ -645,7 +696,54 @@ impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
         }
     }
 
+    fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx hir::Item<'tcx>) {
+        let hir::ItemKind::Struct(..) = item.kind else { return };
+        let attrs = cx.tcx.hir_attrs(rustc_hir::HirId::make_owner(item.owner_id.def_id));
+        let marked = attrs.iter().any(|a| {
+            a.path_matches(&[rustc_span::Symbol::intern("servyi"), rustc_span::Symbol::intern("unsound_constructor")])
+        });
+        if !marked {
+            return;
+        }
+        self.unsound_types.push(item.owner_id.to_def_id());
+        let documented = self.has_safety_comment(cx, item.span);
+        if !documented {
+            cx.opt_span_lint(
+                UNSOUND_CONSTRUCTOR,
+                Some(item.span),
+                rustc_errors::DiagDecorator(|diag| {
+                    diag.note(format!(
+                        "`{}` is #[unsound_constructor]: the struct needs a `/// SAFETY` \
+                         comment right above it explaining the constructor's safety \
+                         preconditions (why constructing it is unsound, and what a \
+                         construction site must prove)",
+                        cx.tcx.item_name(item.owner_id.to_def_id())
+                    ));
+                }),
+            );
+        }
+    }
+
     fn check_expr(&mut self, cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) {
+        if let ExprKind::Struct(qpath, _, _) = e.kind
+            && let hir::def::Res::Def(hir::def::DefKind::Struct, did) =
+                cx.typeck_results().qpath_res(&qpath, e.hir_id)
+            && self.unsound_types.contains(&did)
+            && !self.has_safety_comment(cx, e.span)
+        {
+            cx.opt_span_lint(
+                UNSOUND_CONSTRUCTOR,
+                Some(e.span),
+                rustc_errors::DiagDecorator(|diag| {
+                    diag.note(format!(
+                        "construction of `#{}` is #[unsound_constructor]: a `// SAFETY` \
+                         comment directly inside the constructing block must argue why \
+                         the constructor's safety preconditions hold here",
+                        cx.tcx.item_name(did)
+                    ));
+                }),
+            );
+        }
         let ExprKind::Block(b, _) = e.kind else { return };
         if !matches!(b.rules, BlockCheckMode::UnsafeBlock(UnsafeSource::UserProvided)) {
             return;

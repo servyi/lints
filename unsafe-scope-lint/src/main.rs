@@ -149,14 +149,18 @@ impl UnsafeScope {
         // The contiguous comment block directly above the span: walk the
         // previous lines bottom-up, skipping blanks and attributes; a
         // SAFETY comment anywhere in that block satisfies the requirement.
-        let mut saw_comment = false;
-        for line in snippet.lines().rev() {
+        // When the span starts mid-line, the first (partial) line is not
+        // a comment line of its own — skip it.
+        let mut lines: Vec<&str> = snippet.lines().collect();
+        if sm.lookup_char_pos(span.lo()).col.0 > 0 {
+            lines.pop();
+        }
+        for line in lines.into_iter().rev() {
             let text = line.trim_start();
             if text.is_empty() || text.starts_with("#[") || text.starts_with("#![") {
                 continue;
             }
-            if text.starts_with("//") {
-                saw_comment = true;
+            if is_comment_line(text) {
                 if text.contains("SAFETY") {
                     return true;
                 }
@@ -164,8 +168,28 @@ impl UnsafeScope {
             }
             break;
         }
-        saw_comment
+        self.has_safety_comment_inside(sm, span)
     }
+
+    /// A SAFETY comment INSIDE the expression's own braces, next to the
+    /// fields (`/* SAFETY: ... */` blocks or `//` lines) also counts.
+    fn has_safety_comment_inside(
+        &self,
+        sm: &rustc_span::source_map::SourceMap,
+        span: rustc_span::Span,
+    ) -> bool {
+        match sm.span_to_snippet(span) {
+            Ok(s) => s.lines().any(|l| {
+                let text = l.trim_start();
+                is_comment_line(text) && text.contains("SAFETY")
+            }),
+            Err(_) => false,
+        }
+    }
+}
+
+fn is_comment_line(text: &str) -> bool {
+    text.starts_with("//") || text.starts_with("/*") || text.starts_with("*")
 }
 
 // -----------------------------------------------------------------------------
@@ -713,10 +737,13 @@ impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
                 Some(item.span),
                 rustc_errors::DiagDecorator(|diag| {
                     diag.note(format!(
-                        "`{}` is #[unsound_constructor]: the struct needs a `/// SAFETY` \
-                         comment right above it explaining the constructor's safety \
-                         preconditions (why constructing it is unsound, and what a \
-                         construction site must prove)",
+                        "`{}` is #[unsound_constructor]: document the constructor's \
+                         safety preconditions in a SAFETY comment right above the \
+                         struct (either `///`/`//` line comments or a `/* */` block \
+                         comment). Spell out: WHAT can go wrong if constructed \
+                         wrongly (e.g. aliasing references), and WHAT a construction \
+                         site must prove about its arguments for the construction to \
+                         be sound (the type invariant)",
                         cx.tcx.item_name(item.owner_id.to_def_id())
                     ));
                 }),
@@ -736,9 +763,12 @@ impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
                 Some(e.span),
                 rustc_errors::DiagDecorator(|diag| {
                     diag.note(format!(
-                        "construction of `#{}` is #[unsound_constructor]: a `// SAFETY` \
-                         comment directly inside the constructing block must argue why \
-                         the constructor's safety preconditions hold here",
+                        "construction of `{}` is #[unsound_constructor]: argue, for \
+                         THIS site, why the constructor's safety preconditions hold — \
+                         a SAFETY comment (line `//` or block `/* */` style) either \
+                         directly above the literal or inside its braces, next to the \
+                         fields. Say what makes the arguments satisfy the type \
+                         invariant (owned, exclusive, disjoint, ...)",
                         cx.tcx.item_name(did)
                     ));
                 }),

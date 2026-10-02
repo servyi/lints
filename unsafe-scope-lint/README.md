@@ -138,10 +138,17 @@ fn lease(child: &'o mut C) -> Handle<'o, C> {
 }
 ```
 
-The lint fires when either SAFETY comment is missing. Registering the
-`servyi` tool needs the (nightly) `register_tool` feature; consumers on
-the pinned nightly get it for free. The `lint-policy` action denies it:
-`-D unsound_constructor`.
+The lint fires when either SAFETY comment is missing. Accepted styles:
+`///`/`//` line comments or `/* */` blocks, either directly above the
+literal/struct or — for constructions — inside the literal's braces next
+to the fields; the comment must contain `SAFETY`. The diagnostics spell
+out what each comment should say (the preconditions at the struct, the
+site's argument for them at every construction). Registering the `servyi`
+tool needs the (nightly) `register_tool` feature; consumers on the pinned
+nightly get it for free. The `lint-policy` action denies it:
+`-D unsound_constructor`; the fixture battery covers positive and
+negative cases (tests/good/unsound_constructor_ok.rs,
+tests/bad/unsound_constructor/).
 
 ## Self-test
 

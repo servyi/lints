@@ -62,10 +62,15 @@ runs:
         cargo +nightly-2026-09-21 check --workspace --all-targets
 
     # ── rustdoc link checks ────────────────────────────────────────
-    - uses: dtolnay/rust-toolchain@stable
+    # nightly: consumers may gate nightly features (e.g. register_tool
+    # for the servyi::unsound_constructor attribute); docs build on the
+    # same pinned nightly as everything else.
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly-2026-09-21
     - name: cargo doc with link checking
       shell: bash
       run: >
         RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links"
         CARGO_TARGET_DIR="$PWD/target/servyi-lints-doc"
-        cargo +stable doc --no-deps
+        cargo +nightly-2026-09-21 doc --no-deps

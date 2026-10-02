@@ -14,6 +14,7 @@ extern crate rustc_driver;
 extern crate rustc_errors;
 extern crate rustc_hir;
 extern crate rustc_interface;
+extern crate rustc_lexer;
 extern crate rustc_lint;
 extern crate rustc_middle;
 extern crate rustc_session;
@@ -137,60 +138,102 @@ fn main() {
 }
 
 impl UnsafeScope {
-    /// True when a `// SAFETY` comment sits in the contiguous comment block
-    /// directly above `span` (same heuristics family as clippy's
-    /// undocumented_unsafe_blocks).
+    /// True when a SAFETY comment sits in the contiguous comment block
+    /// directly above `span` (attributes between it and the span are
+    /// skipped). Comment extraction uses `rustc_lexer` — the compiler's
+    /// own lexer — so strings, chars, and nested comments cannot produce
+    /// false positives.
     fn has_safety_comment(&self, cx: &LateContext<'_>, span: rustc_span::Span) -> bool {
         let sm = cx.tcx.sess.source_map();
-        let snippet = match sm.span_to_prev_source(span) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        // The contiguous comment block directly above the span: walk the
-        // previous lines bottom-up, skipping blanks and attributes; a
-        // SAFETY comment anywhere in that block satisfies the requirement.
-        // When the span starts mid-line, the first (partial) line is not
-        // a comment line of its own — skip it.
-        let mut lines: Vec<&str> = snippet.lines().collect();
-        if sm.lookup_char_pos(span.lo()).col.0 > 0 {
-            lines.pop();
+        let Ok(prefix) = sm.span_to_prev_source(span) else { return false };
+        let len = prefix.len();
+        // Token offsets are cumulative over `Token::len`.
+        let mut tokens: Vec<(std::ops::Range<usize>, rustc_lexer::TokenKind)> = Vec::new();
+        let mut pos = 0usize;
+        for t in rustc_lexer::tokenize(&prefix, rustc_lexer::FrontmatterAllowed::No) {
+            let start = pos;
+            pos += t.len as usize;
+            tokens.push((start..pos, t.kind));
         }
-        for line in lines.into_iter().rev() {
-            let text = line.trim_start();
-            if text.is_empty() || text.starts_with("#[") || text.starts_with("#![") {
-                continue;
-            }
-            if is_comment_line(text) {
-                if text.contains("SAFETY") {
-                    return true;
+        // When the span starts mid-line, the final (partial) token run up
+        // to the prefix end is not a comment context of its own.
+        if sm.lookup_char_pos(span.lo()).col.0 > 0 && !prefix.ends_with('\n') {
+            tokens.retain(|(r, _)| r.end < len);
+        }
+        let mut iter = tokens.into_iter().rev().peekable();
+        while let Some((range, kind)) = iter.next() {
+            match kind {
+                rustc_lexer::TokenKind::Whitespace => continue,
+                rustc_lexer::TokenKind::LineComment { doc_style: _ }
+                | rustc_lexer::TokenKind::BlockComment { doc_style: _, terminated: _ } => {
+                    // Contiguous comment block: any line in it may carry
+                    // the SAFETY note; keep walking through plain lines.
+                    if prefix[range].contains("SAFETY") {
+                        return true;
+                    }
                 }
-                continue;
+                // An attribute chain between the comment and the span is
+                // fine (e.g. `#[servyi::unsound_constructor]` above the
+                // struct): skip backwards through the balanced brackets.
+                rustc_lexer::TokenKind::CloseBracket => {
+                    let mut depth = 1usize;
+                    for (r2, k2) in iter.by_ref() {
+                        match k2 {
+                            rustc_lexer::TokenKind::CloseBracket => depth += 1,
+                            rustc_lexer::TokenKind::OpenBracket => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    // also skip the `#` (and `!`) of the attribute
+                                    while let Some((_, k3)) = iter.peek() {
+                                        match k3 {
+                                            rustc_lexer::TokenKind::Pound
+                                            | rustc_lexer::TokenKind::Bang
+                                            | rustc_lexer::TokenKind::Whitespace => {
+                                                let _ = r2;
+                                                iter.next();
+                                            }
+                                            _ => break,
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => break,
             }
-            break;
         }
         self.has_safety_comment_inside(sm, span)
     }
 
-    /// A SAFETY comment INSIDE the expression's own braces, next to the
-    /// fields (`/* SAFETY: ... */` blocks or `//` lines) also counts.
+    /// A SAFETY comment INSIDE the expression's own braces (next to the
+    /// fields) also counts; tokenized with the same lexer.
     fn has_safety_comment_inside(
         &self,
         sm: &rustc_span::source_map::SourceMap,
         span: rustc_span::Span,
     ) -> bool {
         match sm.span_to_snippet(span) {
-            Ok(s) => s.lines().any(|l| {
-                let text = l.trim_start();
-                is_comment_line(text) && text.contains("SAFETY")
-            }),
+            Ok(s) => {
+                let mut pos = 0usize;
+                rustc_lexer::tokenize(&s, rustc_lexer::FrontmatterAllowed::No).any(|t| {
+                    let hit = matches!(
+                        t.kind,
+                        rustc_lexer::TokenKind::LineComment { doc_style: _ }
+                            | rustc_lexer::TokenKind::BlockComment { doc_style: _, terminated: _ }
+                    ) && s[pos..pos + t.len as usize].contains("SAFETY");
+                    pos += t.len as usize;
+                    hit
+                })
+            }
             Err(_) => false,
         }
     }
 }
 
-fn is_comment_line(text: &str) -> bool {
-    text.starts_with("//") || text.starts_with("/*") || text.starts_with("*")
-}
+fn _unused(_: &[(std::ops::Range<usize>, rustc_lexer::TokenKind)]) {}
 
 // -----------------------------------------------------------------------------
 // Which expressions require unsafe?

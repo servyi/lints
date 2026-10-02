@@ -24,3 +24,22 @@ transmute_pipeline
 unsafe_fn_complex_args
 unsafe_fn_computed_arg
 unsafe_ptr_chain
+
+# fixture driver binaries are built by CI (driver-binary job), never committed
+/binary_*
+/closure_body
+/exact_*
+/fn_ptr_call
+/method_chain
+/padding_stmt
+/place_borrow
+/safe_*
+/static_mut_rvalue
+/transmute_pipeline
+/undocumented_struct
+/unsafe_fn_complex_args
+/unsound_constructor_ok
+/compound_assign
+/deref_of_safe_ref
+/let_chain_split
+/place_assign

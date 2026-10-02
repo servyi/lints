@@ -97,3 +97,24 @@ jobs:
             fi
           done
           exit $fail
+
+  driver-binary:
+    # Produce the driver binary as a downloadable artifact instead of
+    # committing built binaries to the tree.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-09-21
+          components: rustc-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: unsafe-scope-lint
+      - run: cargo build --release --manifest-path unsafe-scope-lint/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsafe-scope-lint-linux
+          path: unsafe-scope-lint/target/release/unsafe-scope-lint
+          if-no-files-found: error

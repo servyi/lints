@@ -7,6 +7,8 @@ installable lint; see its README for usage.
 |---|---|---|
 | [`unsafe-scope-lint/`](unsafe-scope-lint/README.md) | this repo (RUSTC_WRAPPER driver) | `unsafe_scope`: `unsafe` blocks may contain only reads of existing bindings plus a single operation that requires unsafe |
 | | | `workspace_lints_table`: the workspace-level Cargo.toml must define no lints (they would drift from the CI flag list) |
+| | | `non_test_panic_allow`: `#[allow]`/`#[expect]` of `clippy::panic`/`clippy::unwrap_used` outside test code — tests are the only sanctioned exemption (`cfg_attr(test, ...)`, `#[cfg(test)]` modules, integration tests) |
+| | | `unsound_constructor`: types marked `#[servyi::unsound_constructor]` (requires `#![register_tool(servyi)]`) must document the constructor's safety preconditions in a `/// SAFETY` comment above the struct, and every construction site must argue them in a `// SAFETY` comment directly above the literal |
 
 ## Shared lint policy (classic rules)
 
@@ -33,6 +35,25 @@ For the same enforcement in a local plain `cargo clippy`, copy the
 equivalent `[workspace.lints]` table into your workspace manifest and set
 `[lints] workspace = true` per crate. CI does not depend on that — it
 enforces the flags above directly.
+
+## Mutex poisoning policy
+
+When `.lock()` returns `PoisonError`, pick a handling **by argument** —
+never a bare `unwrap()`/`expect("poisoned")`:
+
+1. `expect("<why poisoning is impossible>")` — only pure, non-panicking
+   operations run under the lock, so nothing can ever poison it.
+2. `unwrap_or_else(|e| e.into_inner())` **with a comment arguing the
+   state is still valid** — read-only sections, or single atomic-op
+   transitions that cannot be left half-done.
+3. Propagate the error — operating on possibly-broken state is worse
+   than failing the operation.
+4. Log the incident and restart/rebuild the service state — when the
+   guarded state is recoverable (re-derivable from scratch), a poisoned
+   lock is a bug report plus a rebuild, not a crash.
+
+Test mocks are the canonical case for (2): the panicking test already
+fails the run; a readable queue lets the real failure report itself.
 
 ## Consuming the policy in any CI
 

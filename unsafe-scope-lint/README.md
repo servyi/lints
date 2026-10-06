@@ -8,6 +8,8 @@ Custom rustc lints for the shared Servyi policy, run as one
 | `unsafe_scope` | warn | strict shape of `unsafe` blocks (below) |
 | `custom_parser` | warn | hand-parsing primitives only inside sanctioned modules (below) |
 | `workspace_lints_table` | warn | the workspace-level Cargo.toml defines no lints |
+| `non_test_panic_allow` | warn | `#[allow]`/`#[expect]` of `clippy::panic`/`clippy::unwrap_used` outside test code |
+| `unsound_constructor` | warn | `#[servyi::unsound_constructor]` types need `SAFETY` comments at the struct and at every construction site |
 
 ## `unsafe_scope`
 
@@ -94,6 +96,61 @@ Only active under cargo (a bare `rustc` invocation has no manifest), and
 respects `--cap-lints`, so dependencies are never flagged. The
 `lint-policy` action denies it: `-D workspace_lints_table`.
 
+## `non_test_panic_allow`
+
+A panicking test IS the failure signal, so silencing `clippy::panic` /
+`clippy::unwrap_used` is a test-only exemption. The lint fires on bare
+`#[allow]`/`#[expect]` of those lints in non-test compilations:
+
+```text
+warning: `allow(unwrap_used)` silences the panic policy outside test code:
+         a panicking test is the failure signal, but production code must
+         handle or propagate the case instead; gate exemptions with
+         `cfg_attr(test, ...)` or move them into `#[cfg(test)]` code
+```
+
+The sanctioned forms never trip it: without `--test`, `cfg_attr(test, ...)`
+is not expanded and `#[cfg(test)]` modules are not compiled at all;
+integration-test targets compile with `--test`. The `lint-policy` action
+denies it: `-D non_test_panic_allow`.
+
+## `unsound_constructor`
+
+Some types can be constructed into aliasing/invalid states from SAFE code
+(the construction is where their invariants get established) — the borrow
+checker cannot help. Mark such a type:
+
+```rust
+#![feature(register_tool)]
+#![register_tool(servyi)]
+
+/// A lease over a child of the checkpoint tree.
+///
+/// SAFETY (constructor): the struct literal aliases the split item's
+/// storage; sound only when exactly one handle exists per disjoint
+/// split item — construction sites must prove exactly that.
+#[servyi::unsound_constructor]
+pub struct Handle<'o, T> { .. }
+
+fn lease(child: &'o mut C) -> Handle<'o, C> {
+    // SAFETY: `child` is a disjoint split item; this handle is its only
+    // lease.
+    Handle { .. }
+}
+```
+
+The lint fires when either SAFETY comment is missing. Accepted styles:
+`///`/`//` line comments or `/* */` blocks, either directly above the
+literal/struct or — for constructions — inside the literal's braces next
+to the fields; the comment must contain `SAFETY`. The diagnostics spell
+out what each comment should say (the preconditions at the struct, the
+site's argument for them at every construction). Registering the `servyi`
+tool needs the (nightly) `register_tool` feature; consumers on the pinned
+nightly get it for free. The `lint-policy` action denies it:
+`-D unsound_constructor`; the fixture battery covers positive and
+negative cases (tests/good/unsound_constructor_ok.rs,
+tests/bad/unsound_constructor/).
+
 ## Self-test
 
 `tests/bad/unsafe_scope/*.rs` must be denied, `tests/bad/clippy/*.rs` must
@@ -118,7 +175,7 @@ accepted everyday idiom and is deliberately exempt.
 Flagged primitives: `split_once`/`rsplit_once`, `split_terminator`,
 `splitn`, `split_at` (str and slices), `strip_prefix`/`strip_suffix`,
 `trim_matches`/`trim_start_matches`/`trim_end_matches`,
-`match_indices`, `char_indices`.
+`starts_with`, `trim_start`, `match_indices`, `char_indices`.
 
 The protocol when it fires (and in the diagnostic):
 

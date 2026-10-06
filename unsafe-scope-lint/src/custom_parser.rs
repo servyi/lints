@@ -5,12 +5,13 @@ use rustc_span::Span;
 
 /// WARNING: CUSTOM PARSER — this module implements the `custom_parser`
 /// lint itself (issue servyi/lints#9, supervisor sign-off: Jonas's
-/// review on PR #11): it matches resolved def-paths against a suffix
-/// table and line-scans source files for the sanctioned-module header.
-/// No std function or external crate does either job — def-path
-/// matching rides the compiler internals, and the header scan is the
-/// protocol's own enforcement — so the parsing here is hand-written on
-/// purpose (supervisor discussion: PR #11 review thread, 2026-10-06).
+/// review on PR #11): it classifies resolved def-paths against a
+/// suffix table. No std function or external crate parses the
+/// compiler's rendered def-path strings, so THAT classification is
+/// hand-written on purpose (supervisor discussion: PR #11 review
+/// thread, 2026-10-06). The sanctioned-header scan uses the
+/// compiler's own lexer (`rustc_lexer`), as the review demanded —
+/// no line-slicing.
 ///
 /// The "typical functions used for parsing strings" (plain `split` is
 /// deliberately absent — the one accepted everyday idiom, like `trim`
@@ -120,10 +121,12 @@ pub(crate) fn check_parser_primitive<'tcx>(
 }
 
 /// Does the file containing `span` carry the sanctioned header? The
-/// marker line is the FIRST `///` line of the file; every line above
-/// it must be blank, a `use` directive, or a crate attribute.
+/// marker is the FIRST outer-doc token of the file; everything above
+/// it must be whitespace, `use` items, or inner attributes — decided
+/// by the compiler's own lexer (review on #11: no line-slicing; the
+/// lexer also gets the cases slicing cannot see — `use\t` vs `use `,
+/// `////` plain comments and `//!` inner docs vs the `///` marker).
 fn file_has_custom_parser_header(cx: &LateContext<'_>, span: Span) -> bool {
-    use std::io::BufRead as _;
     let filename = cx.sess().source_map().span_to_filename(span);
     let rustc_span::FileName::Real(real) = &filename else {
         return false; // macro expansions / synthetic spans: no header
@@ -131,22 +134,58 @@ fn file_has_custom_parser_header(cx: &LateContext<'_>, span: Span) -> bool {
     let Some(path) = real.local_path() else {
         return false; // remapped/virtual path (e.g. rustc internals)
     };
-    let Ok(file) = std::fs::File::open(path) else {
+    let Ok(src) = std::fs::read_to_string(path) else {
         return false;
     };
-    for line in std::io::BufReader::new(file).lines() {
-        let Ok(line) = line else { return false };
-        let t = line.trim_start();
-        if t.is_empty() || t.starts_with("use ") || t.starts_with("#![") {
-            continue;
+    #[derive(PartialEq)]
+    enum St {
+        /// Between top-level items.
+        Top,
+        /// Inside a `use` item — everything until the `;` is its own.
+        UseItem,
+        /// Inside an inner attribute's brackets (depth counted).
+        Attr(i32),
+        /// Saw `#` (and maybe `!`) — expecting the bracket.
+        AttrPound,
+    }
+    let mut st = St::Top;
+    let mut pos = 0usize;
+    for t in rustc_lexer::tokenize(&src, rustc_lexer::FrontmatterAllowed::No) {
+        let text = &src[pos..pos + t.len as usize];
+        pos += t.len as usize;
+        match st {
+            St::UseItem => {
+                if matches!(t.kind, rustc_lexer::TokenKind::Semi) {
+                    st = St::Top;
+                }
+            }
+            St::Attr(depth) => match t.kind {
+                rustc_lexer::TokenKind::OpenBracket => st = St::Attr(depth + 1),
+                rustc_lexer::TokenKind::CloseBracket if depth == 1 => st = St::Top,
+                rustc_lexer::TokenKind::CloseBracket => st = St::Attr(depth - 1),
+                _ => {}
+            },
+            St::AttrPound => match t.kind {
+                rustc_lexer::TokenKind::Bang => {}
+                rustc_lexer::TokenKind::OpenBracket => st = St::Attr(1),
+                _ => return false,
+            },
+            St::Top => match t.kind {
+                rustc_lexer::TokenKind::Whitespace => {}
+                rustc_lexer::TokenKind::Ident if text == "use" => st = St::UseItem,
+                rustc_lexer::TokenKind::Pound => st = St::AttrPound,
+                rustc_lexer::TokenKind::LineComment {
+                    doc_style: Some(rustc_lexer::DocStyle::Outer),
+                }
+                | rustc_lexer::TokenKind::BlockComment {
+                    doc_style: Some(rustc_lexer::DocStyle::Outer),
+                    terminated: _,
+                } => return text.contains(PARSER_MARKER),
+                // Plain comments, inner docs, any item or debris above
+                // the explanation: not a sanctioned header.
+                _ => return false,
+            },
         }
-        if t.starts_with("///") {
-            return t.contains(PARSER_MARKER);
-        }
-        // Anything else before the first `///` doc: not a sanctioned
-        // header (the explanation must sit at the top, above the
-        // module's items).
-        return false;
     }
     false
 }

@@ -188,11 +188,12 @@ Deliberately NOT flagged (everyday or sanctioned): `split`,
 hashing), generic `Iterator::position`/`peek`/`next` (not
 string-specific), `chunks`/`windows` (general data processing).
 
-The driver lints ITSELF in CI (the self-apply step) — the lint's own
-def-path matcher and header scanner live in
-`src/custom_parser.rs`, a sanctioned module carrying this header;
-the one argv-suffix probe in `main` carries a reviewed
-`#[allow(custom_parser)]`.
+The driver lints ITSELF in CI (the self-apply step) — the lint's
+def-path matcher lives in `src/custom_parser.rs`, a sanctioned
+module carrying this header; the sanctioned-header scan tokenizes
+with the compiler's own `rustc_lexer` (review on #11 — no
+line-slicing), and the one argv-suffix probe in `main` carries a
+reviewed `#[allow(custom_parser)]`.
 
 The protocol when it fires (and in the diagnostic):
 

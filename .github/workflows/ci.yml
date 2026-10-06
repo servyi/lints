@@ -28,7 +28,7 @@ jobs:
           fail=0
           for f in tests/bad/unsound_constructor/*.rs; do
             ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
-              "$f" --crate-type bin --edition 2021 -D unsound_constructor >/dev/null 2>&1
+              "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D unsound_constructor >/dev/null 2>&1
             rc=$?
             if [ $rc -eq 0 ]; then
               echo "FAIL: $f was not denied"
@@ -43,7 +43,7 @@ jobs:
           fail=0
           for f in tests/bad/unsafe_scope/*.rs; do
             ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
-              "$f" --crate-type bin --edition 2021 -D unsafe_scope -D non_test_panic_allow -D unsound_constructor >/dev/null 2>&1
+              "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D unsafe_scope -D non_test_panic_allow -D unsound_constructor >/dev/null 2>&1
             rc=$?
             if [ "$rc" -eq 0 ]; then echo "FAIL: $f was not caught"; fail=1; fi
           done
@@ -53,7 +53,7 @@ jobs:
           set +e
           fail=0
           for f in tests/bad/custom_parser/*.rs; do
-            ./unsafe-scope-lint/target/debug/unsafe-scope-lint               "$f" --crate-type bin --edition 2021 -D custom_parser >/dev/null 2>&1
+            ./unsafe-scope-lint/target/debug/unsafe-scope-lint               "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D custom_parser >/dev/null 2>&1
             rc=$?
             if [ "$rc" -eq 0 ]; then echo "FAIL: $f was not caught"; fail=1; fi
           done
@@ -70,7 +70,7 @@ jobs:
           fail=0
           for f in tests/bad/clippy/*.rs; do
             ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
-              "$f" --crate-type bin --edition 2021 -D unsafe_scope -D non_test_panic_allow -D unsound_constructor >/dev/null 2>&1
+              "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D unsafe_scope -D non_test_panic_allow -D unsound_constructor >/dev/null 2>&1
             rc=$?
             if [ "$rc" -ne 0 ]; then echo "FAIL: $f is not unsafe_scope's job"; fail=1; fi
           done
@@ -93,12 +93,12 @@ jobs:
           fail=0
           for f in tests/good/*.rs; do
             ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
-              "$f" --crate-type bin --edition 2021 -D unsafe_scope -D custom_parser -D non_test_panic_allow -D unsound_constructor >/dev/null 2>&1
+              "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D unsafe_scope -D custom_parser -D non_test_panic_allow -D unsound_constructor >/dev/null 2>&1
             rc=$?
             if [ "$rc" -ne 0 ]; then
               echo "FAIL: $f produced a false positive in the driver"
               ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
-                "$f" --crate-type bin --edition 2021 -D unsafe_scope -D custom_parser -D non_test_panic_allow || true
+                "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D unsafe_scope -D custom_parser -D non_test_panic_allow || true
               fail=1
             fi
             clippy-driver "$f" --crate-type bin --edition 2021 \

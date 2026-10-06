@@ -6,6 +6,7 @@ Custom rustc lints for the shared Servyi policy, run as one
 | lint | default | what it does |
 |---|---|---|
 | `unsafe_scope` | warn | strict shape of `unsafe` blocks (below) |
+| `custom_parser` | warn | hand-parsing primitives only inside sanctioned modules (below) |
 | `workspace_lints_table` | warn | the workspace-level Cargo.toml defines no lints |
 
 ## `unsafe_scope`
@@ -106,3 +107,34 @@ loops.
 pinned nightly in `rust-toolchain.toml` is the supported combination;
 bump it deliberately (rebuild + fixture check) when moving to a newer
 nightly.
+
+## `custom_parser` (issue #9)
+
+Flags calls to "typical functions used for parsing strings" — the
+primitives people reach for when hand-rolling a parser — everywhere
+except a sanctioned custom-parser module. Plain `split` is the one
+accepted everyday idiom and is deliberately exempt.
+
+Flagged primitives: `split_once`/`rsplit_once`, `split_terminator`,
+`splitn`, `split_at` (str and slices), `strip_prefix`/`strip_suffix`,
+`trim_matches`/`trim_start_matches`/`trim_end_matches`,
+`match_indices`, `char_indices`.
+
+The protocol when it fires (and in the diagnostic):
+
+1. first check that no std function or external crate already does
+   this parsing job;
+2. if hand-rolling is necessary, agree on the approach and design
+   with a human supervisor;
+3. once agreed, isolate the parser in a submodule headed by
+
+```rust
+use ...;
+
+/// WARNING: CUSTOM PARSER — why this parser must be hand-written
+```
+
+   with only `use` directives (and crate attributes / blank lines)
+   above the explanation. Files carrying that header are exempt from
+   the lint wholesale. `#[allow(custom_parser)]` remains the per-site
+   escape.

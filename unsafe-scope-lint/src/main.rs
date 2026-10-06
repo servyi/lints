@@ -1,12 +1,22 @@
-//! `unsafe_scope`: enforce the strict shape of `unsafe` blocks — the block
-//! body must be reads of existing bindings plus exactly one operation that
-//! requires unsafe whose operands are those binding reads; everything else
-//! (argument computation, arithmetic, `let`) must be hoisted out and the
-//! unsafe blocks let-chained: `let q = unsafe { buf.add(i) }; unsafe { *q }`.
+//! Two string-policy lints and one manifest lint ride this driver:
 //!
-//! Used as a `RUSTC_WRAPPER`: cargo invokes this binary in place of rustc;
-//! it registers one extra late lint and otherwise behaves exactly like the
-//! compiler it ships with (same nightly toolchain).
+//! - `unsafe_scope`: enforce the strict shape of `unsafe` blocks — the
+//!   block body must be reads of existing bindings plus exactly one
+//!   operation that requires unsafe whose operands are those binding
+//!   reads; everything else (argument computation, arithmetic, `let`)
+//!   must be hoisted out and the unsafe blocks let-chained:
+//!   `let q = unsafe { buf.add(i) }; unsafe { *q }`.
+//! - `custom_parser` (issue #9): calls to typical hand-parsing
+//!   primitives (`split_once`, `strip_prefix`, `trim_*_matches`, ...)
+//!   must not appear outside a sanctioned custom-parser module — one
+//!   headed by a `/// WARNING: CUSTOM PARSER ...` explanation with
+//!   only `use` directives above it.
+//! - `workspace_lints_table`: the workspace manifest defines no lint
+//!   tables (the shared policy is the CI flag list).
+//!
+//! Used as a `RUSTC_WRAPPER`: cargo invokes this binary in place of
+//! rustc; it registers the extra late lints and otherwise behaves
+//! exactly like the compiler it ships with (same nightly toolchain).
 #![feature(rustc_private)]
 #![allow(internal_features)]
 extern crate rustc_ast;
@@ -39,6 +49,20 @@ declare_lint! {
 }
 
 declare_lint! {
+    /// Checks that "typical parser functions" (string-parsing
+    /// primitives people reach for when hand-rolling a parser —
+    /// `split_once`, `strip_prefix`, `trim_matches`, ...; plain
+    /// `split` is exempt) are only used inside a sanctioned
+    /// custom-parser module: one headed by a
+    /// `/// WARNING: CUSTOM PARSER ...` explanation with only `use`
+    /// directives above it (issue #9). `#[allow(custom_parser)]`
+    /// remains the per-site escape.
+    pub CUSTOM_PARSER,
+    Warn,
+    "hand-rolled parser primitive used outside a WARNING: CUSTOM PARSER module"
+}
+
+declare_lint! {
     /// Checks that the workspace-level Cargo.toml defines no lint tables.
     /// The shared Servyi policy is the explicit flag list the CI runs
     /// (servyi/lints lint-policy.yml); a manifest table is a second place
@@ -48,7 +72,7 @@ declare_lint! {
     "the workspace-level Cargo.toml defines lints"
 }
 
-impl_lint_pass!(UnsafeScope => [UNSAFE_SCOPE, WORKSPACE_LINTS_TABLE]);
+impl_lint_pass!(UnsafeScope => [UNSAFE_SCOPE, CUSTOM_PARSER, WORKSPACE_LINTS_TABLE]);
 
 struct LintCallbacks;
 
@@ -59,7 +83,7 @@ impl rustc_driver::Callbacks for LintCallbacks {
             if let Some(prev) = &previous {
                 prev(sess, store);
             }
-            store.register_lints(&[UNSAFE_SCOPE, WORKSPACE_LINTS_TABLE]);
+            store.register_lints(&[UNSAFE_SCOPE, CUSTOM_PARSER, WORKSPACE_LINTS_TABLE]);
             store.register_late_lint_pass(Box::new(|_| Box::new(UnsafeScope)));
         }));
     }
@@ -564,6 +588,122 @@ mod tests {
 
 pub struct UnsafeScope;
 
+// -----------------------------------------------------------------------------
+// custom_parser (issue #9)
+
+/// The "typical functions used for parsing strings" (plain `split` is
+/// deliberately absent — the one accepted everyday idiom). Def-path
+/// SUFFIXES against the resolved callee (inherent impls resolve to
+/// e.g. `core::str::<impl str>::split_once`), with the human-facing
+/// name for the diagnostic.
+const PARSER_PRIMITIVES: &[(&str, &str)] = &[
+    // cursor-style consumption and delimiting
+    ("<impl str>::split_once", "str::split_once"),
+    ("<impl str>::rsplit_once", "str::rsplit_once"),
+    ("<impl str>::split_terminator", "str::split_terminator"),
+    ("<impl str>::rsplit_terminator", "str::rsplit_terminator"),
+    ("<impl str>::splitn", "str::splitn"),
+    ("<impl str>::rsplitn", "str::rsplitn"),
+    ("<impl str>::split_at", "str::split_at"),
+    ("<impl [T]>::split_at", "slice::split_at"),
+    ("<impl [T]>::split_at_mut", "slice::split_at_mut"),
+    ("<impl str>::strip_prefix", "str::strip_prefix"),
+    ("<impl str>::strip_suffix", "str::strip_suffix"),
+    // custom-delimiter stripping (whitespace has trim())
+    ("<impl str>::trim_matches", "str::trim_matches"),
+    ("<impl str>::trim_start_matches", "str::trim_start_matches"),
+    ("<impl str>::trim_end_matches", "str::trim_end_matches"),
+    // scanner idioms
+    ("<impl str>::match_indices", "str::match_indices"),
+    ("<impl str>::char_indices", "str::char_indices"),
+];
+
+/// The sanctioned-module header (issue #9): a `/// WARNING: CUSTOM
+/// PARSER` explanation at the top of the file, with only `use`
+/// directives (and crate attributes / blank lines) above it.
+const PARSER_MARKER: &str = "WARNING: CUSTOM PARSER";
+
+fn check_parser_primitive<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) {
+    // Skip where the lint is not active (`--cap-lints allow` for
+    // dependencies, `#[allow]`'d scopes).
+    let spec = cx.get_lint_level_spec(CUSTOM_PARSER);
+    if spec.is_allow() || spec.is_expect() {
+        return;
+    }
+    let path = match &e.kind {
+        hir::ExprKind::MethodCall(..) => {
+            let Some(def) = cx.typeck_results().type_dependent_def_id(e.hir_id) else {
+                return;
+            };
+            cx.tcx.def_path_str(def)
+        }
+        hir::ExprKind::Call(callee, _) => {
+            let hir::ExprKind::Path(qpath) = &callee.kind else { return };
+            match cx.typeck_results().qpath_res(qpath, callee.hir_id) {
+                hir::def::Res::Def(_, def) => cx.tcx.def_path_str(def),
+                _ => return,
+            }
+        }
+        _ => return,
+    };
+    if std::env::var_os("CUSTOM_PARSER_DEBUG").is_some() {
+        eprintln!("custom_parser: resolved call: {path}");
+    }
+    let Some(&(_, why)) = PARSER_PRIMITIVES.iter().find(|(p, _)| path.ends_with(p)) else {
+        return;
+    };
+    if file_has_custom_parser_header(cx, e.span) {
+        return;
+    }
+    cx.opt_span_lint(
+        CUSTOM_PARSER,
+        Some(e.span),
+        rustc_errors::DiagDecorator(|diag| {
+            diag.note(format!(
+                "`{path}` is a typical hand-parsing primitive (issue servyi/lints#9): \
+                 first check that no std function or external crate already does this \
+                 parsing job. If hand-rolling the parser is necessary, agree on the \
+                 approach and design with a human supervisor, then isolate it in a \
+                 submodule whose header carries `/// {PARSER_MARKER} ...` explaining why \
+                 it must be hand-written (only `use` directives above the explanation). \
+                 `{why}` was the matched primitive."
+            ));
+        }),
+    );
+}
+
+/// Does the file containing `span` carry the sanctioned header? The
+/// marker line is the FIRST `///` line of the file; every line above
+/// it must be blank, a `use` directive, or a crate attribute.
+fn file_has_custom_parser_header(cx: &LateContext<'_>, span: rustc_span::Span) -> bool {
+    use std::io::BufRead as _;
+    let filename = cx.sess().source_map().span_to_filename(span);
+    let rustc_span::FileName::Real(real) = &filename else {
+        return false; // macro expansions / synthetic spans: no header
+    };
+    let Some(path) = real.local_path() else {
+        return false; // remapped/virtual path (e.g. rustc internals)
+    };
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    for line in std::io::BufReader::new(file).lines() {
+        let Ok(line) = line else { return false };
+        let t = line.trim_start();
+        if t.is_empty() || t.starts_with("use ") || t.starts_with("#![") {
+            continue;
+        }
+        if t.starts_with("///") {
+            return t.contains(PARSER_MARKER);
+        }
+        // Anything else before the first `///` doc: not a sanctioned
+        // header (the explanation must sit at the top, above the
+        // module's items).
+        return false;
+    }
+    false
+}
+
 impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
     fn check_crate(&mut self, cx: &LateContext<'tcx>) {
         // Skip where the lint is not active (`--cap-lints allow` for
@@ -588,6 +728,8 @@ impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
     }
 
     fn check_expr(&mut self, cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) {
+        check_parser_primitive(cx, e);
+
         let ExprKind::Block(b, _) = e.kind else { return };
         if !matches!(b.rules, BlockCheckMode::UnsafeBlock(UnsafeSource::UserProvided)) {
             return;

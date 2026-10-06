@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:  # GitHub drops branch-push events now and then (observed on this SHA); manual trigger as the fallback
 
 env:
   CARGO_TERM_COLOR: always

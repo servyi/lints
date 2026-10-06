@@ -1,6 +1,6 @@
 use std::io::Write as _;
 
-/// WARNING: CUSTOM PARSER — supervisor agreement (issue #9 review,
+/// WARNING: CUSTOM PARSER — APPROVED BY: <https://github.com/servyi/lints/pull/11#issuecomment-6019322829>
 /// 2026-10-02): the wire grammar is two fixed delimiters with no
 /// escaping; a full crate (nom, winnow) would not shrink the trust
 /// base, and std has no two-delimiter split. Hand-rolled here on

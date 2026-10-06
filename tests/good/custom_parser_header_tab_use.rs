@@ -1,6 +1,6 @@
 use	std::io::Write as _;
 
-/// WARNING: CUSTOM PARSER — supervisor agreement: a tab after `use` is a token, not a space; the lexer accepts what line-slicing rejected.
+/// WARNING: CUSTOM PARSER — APPROVED BY: <https://github.com/servyi/lints/pull/11#issuecomment-6019322829>
 fn parse(line: &str) -> Option<(&str, &str)> {
     line.split_once('=')
 }

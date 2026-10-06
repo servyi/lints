@@ -195,6 +195,24 @@ with the compiler's own `rustc_lexer` (review on #11 — no
 line-slicing), and the one argv-suffix probe in `main` carries a
 reviewed `#[allow(custom_parser)]`.
 
+The sanctioned header carries an APPROVAL: the file must start with
+
+\`\`\`
+/// WARNING: CUSTOM PARSER — APPROVED BY: <url>
+\`\`\`
+
+where \`<url>\` is a markdown autolink to a comment by a maintainer
+(listed in the lint's MAINTAINERS) whose body contains
+\`I approve writing a custom parser for this specific use case:\`
+in plain prose (markdown-parsed — a code-quoted template cannot
+self-approve). The linter verifies all of this LIVE against the
+GitHub API and fails closed when it cannot check. The diagnostic
+spells out the full protocol: seek an off-the-shelf parser first;
+request approval with a complete inventory of the strictly necessary
+cases; remove everything not covered by the approval.
+
+The old protocol (supervisor discussion + unlinked header) is gone.
+
 The protocol when it fires (and in the diagnostic):
 
 1. first check that no std function or external crate already does

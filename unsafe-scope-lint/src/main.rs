@@ -127,18 +127,16 @@ impl rustc_driver::Callbacks for LintCallbacks {
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    // As RUSTC_WRAPPER, cargo passes the real rustc path as the first arg.
-    // Custom-parser review (issue #9, PR #11): suffix-matching the
-    // wrapper argv is this probe's whole job — two constants, no
-    // grammar; a named-constant rewrite would not change the shape.
-    // (`unknown_lints`: plain builds compile this without the driver
-    // wrapper, where `custom_parser` does not exist yet.)
-    #[allow(unknown_lints)]
-    #[allow(custom_parser)]
+    // As RUSTC_WRAPPER, cargo passes the real rustc path as the first
+    // arg. The probe recognizes it by FILE NAME equality via std's
+    // path componentization (review on #11: no string suffix match).
+    let is_compiler = |a: &String| {
+        std::path::Path::new(a)
+            .file_name()
+            .is_some_and(|f| f == "rustc" || f == "clippy-driver")
+    };
     let rustc_path = if std::env::var_os("RUSTC_WRAPPER").is_some()
-        && args
-            .first()
-            .is_some_and(|a| a.ends_with("rustc") || a.ends_with("clippy-driver"))
+        && args.first().is_some_and(is_compiler)
     {
         Some(args.remove(0))
     } else {

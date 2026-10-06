@@ -22,8 +22,19 @@ pub(crate) fn has_safety_comment(cx: &LateContext<'_>, span: rustc_span::Span) -
         // EARLIER LINES count: when the span starts mid-line (`let h =
         // Struct { .. }`), the `let`/ident/`=` tokens of its own line
         // would break the backward walk before it can reach the comment
-        // block attached to the STATEMENT above.
-        let cut = prefix.rfind('\n').unwrap_or(0);
+        // block attached to the STATEMENT above. The cut comes from the
+        // SOURCE MAP's own positions (review on #11: rustc's lexing and
+        // positions, no line-searching) — the bytes of the span's own
+        // line before the span are excluded.
+        let same_line_before_span = sm
+            .lookup_line(span.lo())
+            .ok()
+            .and_then(|sl| {
+                let line_start = sl.sf.line_bounds(sl.line).start;
+                (span.lo() >= line_start).then(|| (span.lo() - line_start).0 as usize)
+            })
+            .unwrap_or(0);
+        let cut = prefix.len().saturating_sub(same_line_before_span);
         let mut tokens: Vec<(std::ops::Range<usize>, rustc_lexer::TokenKind)> = Vec::new();
         let mut pos = 0usize;
         for t in rustc_lexer::tokenize(&prefix, rustc_lexer::FrontmatterAllowed::No) {

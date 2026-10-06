@@ -58,6 +58,12 @@ jobs:
             if [ "$rc" -eq 0 ]; then echo "FAIL: $f was not caught"; fail=1; fi
           done
           exit $fail
+      - name: the driver lints ITSELF (self-apply — review on #11)
+        run: |
+          RUSTC_WRAPPER="$PWD/unsafe-scope-lint/target/debug/unsafe-scope-lint" \
+          RUSTFLAGS="-D unsafe_scope -D custom_parser -D non_test_panic_allow -D unsound_constructor" \
+          CARGO_TARGET_DIR=target/self-apply \
+          cargo +nightly-2026-09-21 check --manifest-path unsafe-scope-lint/Cargo.toml
       - name: clippy-owned bad fixtures must pass the driver (owned by classic lints)
         run: |
           set +e

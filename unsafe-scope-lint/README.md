@@ -173,9 +173,26 @@ except a sanctioned custom-parser module. Plain `split` is the one
 accepted everyday idiom and is deliberately exempt.
 
 Flagged primitives: `split_once`/`rsplit_once`, `split_terminator`,
-`splitn`, `split_at` (str and slices), `strip_prefix`/`strip_suffix`,
-`trim_matches`/`trim_start_matches`/`trim_end_matches`,
-`starts_with`, `trim_start`, `match_indices`, `char_indices`.
+`split_inclusive`, `splitn`, `split_at` (+ `_checked`, str and
+slices), `strip_prefix`/`strip_suffix`, `split_first`/`split_last`
+(token consumption), `trim_matches`/`trim_start_matches`/
+`trim_end_matches`, `starts_with`/`ends_with`, `trim_start`/
+`trim_end`, `find`/`rfind` (index cursors — containment checks
+should use `contains`), `match_indices`, `char_indices`,
+`Chars::as_str` (the lexer-cursor advance), `is_char_boundary`,
+`char::to_digit` (use `str::parse`/`from_str_radix`).
+
+Deliberately NOT flagged (everyday or sanctioned): `split`,
+`split_whitespace`, `trim`, `contains`, `str::parse`,
+`from_str_radix`, `str::from_utf8` (conversion), `as_bytes` (I/O and
+hashing), generic `Iterator::position`/`peek`/`next` (not
+string-specific), `chunks`/`windows` (general data processing).
+
+The driver lints ITSELF in CI (the self-apply step) — the lint's own
+def-path matcher and header scanner live in
+`src/custom_parser.rs`, a sanctioned module carrying this header;
+the one argv-suffix probe in `main` carries a reviewed
+`#[allow(custom_parser)]`.
 
 The protocol when it fires (and in the diagnostic):
 

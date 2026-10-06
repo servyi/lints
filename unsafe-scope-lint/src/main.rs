@@ -146,19 +146,20 @@ impl UnsafeScope {
     fn has_safety_comment(&self, cx: &LateContext<'_>, span: rustc_span::Span) -> bool {
         let sm = cx.tcx.sess.source_map();
         let Ok(prefix) = sm.span_to_prev_source(span) else { return false };
-        let len = prefix.len();
-        // Token offsets are cumulative over `Token::len`.
+        // Token offsets are cumulative over `Token::len`. Only tokens on
+        // EARLIER LINES count: when the span starts mid-line (`let h =
+        // Struct { .. }`), the `let`/ident/`=` tokens of its own line
+        // would break the backward walk before it can reach the comment
+        // block attached to the STATEMENT above.
+        let cut = prefix.rfind('\n').unwrap_or(0);
         let mut tokens: Vec<(std::ops::Range<usize>, rustc_lexer::TokenKind)> = Vec::new();
         let mut pos = 0usize;
         for t in rustc_lexer::tokenize(&prefix, rustc_lexer::FrontmatterAllowed::No) {
             let start = pos;
             pos += t.len as usize;
-            tokens.push((start..pos, t.kind));
-        }
-        // When the span starts mid-line, the final (partial) token run up
-        // to the prefix end is not a comment context of its own.
-        if sm.lookup_char_pos(span.lo()).col.0 > 0 && !prefix.ends_with('\n') {
-            tokens.retain(|(r, _)| r.end < len);
+            if pos <= cut {
+                tokens.push((start..pos, t.kind));
+            }
         }
         let mut iter = tokens.into_iter().rev().peekable();
         while let Some((range, kind)) = iter.next() {

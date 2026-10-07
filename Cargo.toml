@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "servyi-lint",
+    "servyi-lint-core",
+    "lint-custom-parser",
+    "lint-inline-literal",
+    "lint-non-test-panic-allow",
+    "lint-unsafe-scope",
+    "lint-unsound-constructor",
+    "lint-workspace-lints-table",
+]

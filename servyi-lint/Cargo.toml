@@ -1,0 +1,14 @@
+[package]
+name = "servyi-lint"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+servyi-lint-core = { path = "../servyi-lint-core" }
+lint-custom-parser = { path = "../lint-custom-parser" }
+lint-inline-literal = { path = "../lint-inline-literal" }
+lint-non-test-panic-allow = { path = "../lint-non-test-panic-allow" }
+lint-unsafe-scope = { path = "../lint-unsafe-scope" }
+lint-unsound-constructor = { path = "../lint-unsound-constructor" }
+lint-workspace-lints-table = { path = "../lint-workspace-lints-table" }

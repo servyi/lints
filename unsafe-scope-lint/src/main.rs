@@ -1,12 +1,27 @@
-//! `unsafe_scope`: enforce the strict shape of `unsafe` blocks — the block
-//! body must be reads of existing bindings plus exactly one operation that
-//! requires unsafe whose operands are those binding reads; everything else
-//! (argument computation, arithmetic, `let`) must be hoisted out and the
-//! unsafe blocks let-chained: `let q = unsafe { buf.add(i) }; unsafe { *q }`.
+//! The shared-policy lints ride one driver:
 //!
-//! Used as a `RUSTC_WRAPPER`: cargo invokes this binary in place of rustc;
-//! it registers one extra late lint and otherwise behaves exactly like the
-//! compiler it ships with (same nightly toolchain).
+//! - `unsafe_scope`: enforce the strict shape of `unsafe` blocks — the
+//!   block body must be reads of existing bindings plus exactly one
+//!   operation that requires unsafe whose operands are those binding
+//!   reads; everything else (argument computation, arithmetic, `let`)
+//!   must be hoisted out and the unsafe blocks let-chained:
+//!   `let q = unsafe { buf.add(i) }; unsafe { *q }`.
+//! - `custom_parser` (issue #9): calls to typical hand-parsing
+//!   primitives (`split_once`, `strip_prefix`, `trim_*_matches`, ...)
+//!   must not appear outside a sanctioned custom-parser module — one
+//!   headed by a `/// WARNING: CUSTOM PARSER ...` explanation with
+//!   only `use` directives above it.
+//! - `unsound_constructor` (issue #8): constructing an
+//!   `#[unsound_constructor]` type carries SAFETY comments at the type
+//!   and at every construction site.
+//! - `non_test_panic_allow` (issue #6): `allow`/`expect` of the
+//!   panic/unwrap lints is a test-only exemption.
+//! - `workspace_lints_table`: the workspace manifest defines no lint
+//!   tables (the shared policy is the CI flag list).
+//!
+//! Used as a `RUSTC_WRAPPER`: cargo invokes this binary in place of
+//! rustc; it registers the extra late lints and otherwise behaves
+//! exactly like the compiler it ships with (same nightly toolchain).
 #![feature(rustc_private)]
 #![allow(internal_features)]
 extern crate rustc_ast;
@@ -19,6 +34,9 @@ extern crate rustc_lint;
 extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
+
+mod custom_parser;
+mod safety_scan;
 
 use rustc_ast::Mutability;
 use rustc_hir as hir;
@@ -37,6 +55,20 @@ declare_lint! {
     pub UNSAFE_SCOPE,
     Warn,
     "unsafe block body must be binding reads plus a single unsafe operation"
+}
+
+declare_lint! {
+    /// Checks that "typical parser functions" (string-parsing
+    /// primitives people reach for when hand-rolling a parser —
+    /// `split_once`, `strip_prefix`, `trim_matches`, ...; plain
+    /// `split` is exempt) are only used inside a sanctioned
+    /// custom-parser module: one headed by a
+    /// `/// WARNING: CUSTOM PARSER ...` explanation with only `use`
+    /// directives above it (issue #9). `#[allow(custom_parser)]`
+    /// remains the per-site escape.
+    pub CUSTOM_PARSER,
+    Warn,
+    "hand-rolled parser primitive used outside a WARNING: CUSTOM PARSER module"
 }
 
 declare_lint! {
@@ -76,7 +108,7 @@ declare_lint! {
     "the workspace-level Cargo.toml defines lints"
 }
 
-impl_lint_pass!(UnsafeScope => [UNSAFE_SCOPE, UNSOUND_CONSTRUCTOR, WORKSPACE_LINTS_TABLE, NON_TEST_PANIC_ALLOW]);
+impl_lint_pass!(UnsafeScope => [UNSAFE_SCOPE, CUSTOM_PARSER, UNSOUND_CONSTRUCTOR, WORKSPACE_LINTS_TABLE, NON_TEST_PANIC_ALLOW]);
 
 struct LintCallbacks;
 
@@ -87,7 +119,7 @@ impl rustc_driver::Callbacks for LintCallbacks {
             if let Some(prev) = &previous {
                 prev(sess, store);
             }
-            store.register_lints(&[UNSAFE_SCOPE, UNSOUND_CONSTRUCTOR, WORKSPACE_LINTS_TABLE, NON_TEST_PANIC_ALLOW]);
+            store.register_lints(&[UNSAFE_SCOPE, CUSTOM_PARSER, UNSOUND_CONSTRUCTOR, WORKSPACE_LINTS_TABLE, NON_TEST_PANIC_ALLOW]);
             store.register_late_lint_pass(Box::new(|_| Box::new(UnsafeScope { unsound_types: Vec::new() })));
         }));
     }
@@ -95,11 +127,16 @@ impl rustc_driver::Callbacks for LintCallbacks {
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    // As RUSTC_WRAPPER, cargo passes the real rustc path as the first arg.
+    // As RUSTC_WRAPPER, cargo passes the real rustc path as the first
+    // arg. The probe recognizes it by FILE NAME equality via std's
+    // path componentization (review on #11: no string suffix match).
+    let is_compiler = |a: &String| {
+        std::path::Path::new(a)
+            .file_name()
+            .is_some_and(|f| f == "rustc" || f == "clippy-driver")
+    };
     let rustc_path = if std::env::var_os("RUSTC_WRAPPER").is_some()
-        && args
-            .first()
-            .is_some_and(|a| a.ends_with("rustc") || a.ends_with("clippy-driver"))
+        && args.first().is_some_and(is_compiler)
     {
         Some(args.remove(0))
     } else {
@@ -137,102 +174,6 @@ fn main() {
     std::process::exit(exit_code);
 }
 
-impl UnsafeScope {
-    /// True when a SAFETY comment sits in the contiguous comment block
-    /// directly above `span` (attributes between it and the span are
-    /// skipped). Comment extraction uses `rustc_lexer` — the compiler's
-    /// own lexer — so strings, chars, and nested comments cannot produce
-    /// false positives.
-    fn has_safety_comment(&self, cx: &LateContext<'_>, span: rustc_span::Span) -> bool {
-        let sm = cx.tcx.sess.source_map();
-        let Ok(prefix) = sm.span_to_prev_source(span) else { return false };
-        // Token offsets are cumulative over `Token::len`. Only tokens on
-        // EARLIER LINES count: when the span starts mid-line (`let h =
-        // Struct { .. }`), the `let`/ident/`=` tokens of its own line
-        // would break the backward walk before it can reach the comment
-        // block attached to the STATEMENT above.
-        let cut = prefix.rfind('\n').unwrap_or(0);
-        let mut tokens: Vec<(std::ops::Range<usize>, rustc_lexer::TokenKind)> = Vec::new();
-        let mut pos = 0usize;
-        for t in rustc_lexer::tokenize(&prefix, rustc_lexer::FrontmatterAllowed::No) {
-            let start = pos;
-            pos += t.len as usize;
-            if pos <= cut {
-                tokens.push((start..pos, t.kind));
-            }
-        }
-        let mut iter = tokens.into_iter().rev().peekable();
-        while let Some((range, kind)) = iter.next() {
-            match kind {
-                rustc_lexer::TokenKind::Whitespace => continue,
-                rustc_lexer::TokenKind::LineComment { doc_style: _ }
-                | rustc_lexer::TokenKind::BlockComment { doc_style: _, terminated: _ } => {
-                    // Contiguous comment block: any line in it may carry
-                    // the SAFETY note; keep walking through plain lines.
-                    if prefix[range].contains("SAFETY") {
-                        return true;
-                    }
-                }
-                // An attribute chain between the comment and the span is
-                // fine (e.g. `#[servyi::unsound_constructor]` above the
-                // struct): skip backwards through the balanced brackets.
-                rustc_lexer::TokenKind::CloseBracket => {
-                    let mut depth = 1usize;
-                    for (r2, k2) in iter.by_ref() {
-                        match k2 {
-                            rustc_lexer::TokenKind::CloseBracket => depth += 1,
-                            rustc_lexer::TokenKind::OpenBracket => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    // also skip the `#` (and `!`) of the attribute
-                                    while let Some((_, k3)) = iter.peek() {
-                                        match k3 {
-                                            rustc_lexer::TokenKind::Pound
-                                            | rustc_lexer::TokenKind::Bang
-                                            | rustc_lexer::TokenKind::Whitespace => {
-                                                let _ = r2;
-                                                iter.next();
-                                            }
-                                            _ => break,
-                                        }
-                                    }
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => break,
-            }
-        }
-        self.has_safety_comment_inside(sm, span)
-    }
-
-    /// A SAFETY comment INSIDE the expression's own braces (next to the
-    /// fields) also counts; tokenized with the same lexer.
-    fn has_safety_comment_inside(
-        &self,
-        sm: &rustc_span::source_map::SourceMap,
-        span: rustc_span::Span,
-    ) -> bool {
-        match sm.span_to_snippet(span) {
-            Ok(s) => {
-                let mut pos = 0usize;
-                rustc_lexer::tokenize(&s, rustc_lexer::FrontmatterAllowed::No).any(|t| {
-                    let hit = matches!(
-                        t.kind,
-                        rustc_lexer::TokenKind::LineComment { doc_style: _ }
-                            | rustc_lexer::TokenKind::BlockComment { doc_style: _, terminated: _ }
-                    ) && s[pos..pos + t.len as usize].contains("SAFETY");
-                    pos += t.len as usize;
-                    hit
-                })
-            }
-            Err(_) => false,
-        }
-    }
-}
 
 fn _unused(_: &[(std::ops::Range<usize>, rustc_lexer::TokenKind)]) {}
 
@@ -774,7 +715,7 @@ impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
             return;
         }
         self.unsound_types.push(item.owner_id.to_def_id());
-        let documented = self.has_safety_comment(cx, item.span);
+        let documented = safety_scan::has_safety_comment(cx, item.span);
         if !documented {
             cx.opt_span_lint(
                 UNSOUND_CONSTRUCTOR,
@@ -796,11 +737,13 @@ impl<'tcx> LateLintPass<'tcx> for UnsafeScope {
     }
 
     fn check_expr(&mut self, cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) {
+        custom_parser::check_parser_primitive(cx, e);
+
         if let ExprKind::Struct(qpath, _, _) = e.kind
             && let hir::def::Res::Def(hir::def::DefKind::Struct, did) =
                 cx.typeck_results().qpath_res(&qpath, e.hir_id)
             && self.unsound_types.contains(&did)
-            && !self.has_safety_comment(cx, e.span)
+            && !safety_scan::has_safety_comment(cx, e.span)
         {
             cx.opt_span_lint(
                 UNSOUND_CONSTRUCTOR,

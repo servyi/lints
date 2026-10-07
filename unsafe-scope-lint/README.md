@@ -6,6 +6,7 @@ Custom rustc lints for the shared Servyi policy, run as one
 | lint | default | what it does |
 |---|---|---|
 | `unsafe_scope` | warn | strict shape of `unsafe` blocks (below) |
+| `custom_parser` | warn | hand-parsing primitives only inside sanctioned modules (below) |
 | `workspace_lints_table` | warn | the workspace-level Cargo.toml defines no lints |
 | `non_test_panic_allow` | warn | `#[allow]`/`#[expect]` of `clippy::panic`/`clippy::unwrap_used` outside test code |
 | `unsound_constructor` | warn | `#[servyi::unsound_constructor]` types need `SAFETY` comments at the struct and at every construction site |
@@ -163,3 +164,70 @@ loops.
 pinned nightly in `rust-toolchain.toml` is the supported combination;
 bump it deliberately (rebuild + fixture check) when moving to a newer
 nightly.
+
+## `custom_parser` (issue #9)
+
+Flags calls to "typical functions used for parsing strings" — the
+primitives people reach for when hand-rolling a parser — everywhere
+except a sanctioned custom-parser module. Plain `split` is the one
+accepted everyday idiom and is deliberately exempt.
+
+Flagged primitives: `split_once`/`rsplit_once`, `split_terminator`,
+`split_inclusive`, `splitn`, `split_at` (+ `_checked`, str and
+slices), `strip_prefix`/`strip_suffix`, `split_first`/`split_last`
+(token consumption), `trim_matches`/`trim_start_matches`/
+`trim_end_matches`, `starts_with`/`ends_with`, `trim_start`/
+`trim_end`, `find`/`rfind` (index cursors — containment checks
+should use `contains`), `match_indices`, `char_indices`,
+`Chars::as_str` (the lexer-cursor advance), `is_char_boundary`,
+`char::to_digit` (use `str::parse`/`from_str_radix`).
+
+Deliberately NOT flagged (everyday or sanctioned): `split`,
+`split_whitespace`, `trim`, `contains`, `str::parse`,
+`from_str_radix`, `str::from_utf8` (conversion), `as_bytes` (I/O and
+hashing), generic `Iterator::position`/`peek`/`next` (not
+string-specific), `chunks`/`windows` (general data processing).
+
+The driver lints ITSELF in CI (the self-apply step) — the lint's
+def-path matcher lives in `src/custom_parser.rs`, a sanctioned
+module carrying this header; the sanctioned-header scan tokenizes
+with the compiler's own `rustc_lexer` (review on #11 — no
+line-slicing), and the one argv-suffix probe in `main` carries a
+reviewed `#[allow(custom_parser)]`.
+
+The sanctioned header carries an APPROVAL: the file must start with
+
+\`\`\`
+/// WARNING: CUSTOM PARSER — APPROVED BY: <url>
+\`\`\`
+
+where \`<url>\` is a markdown autolink to a comment by a maintainer
+(listed in the lint's MAINTAINERS) whose body contains
+\`I approve writing a custom parser for this specific use case:\`
+in plain prose (markdown-parsed — a code-quoted template cannot
+self-approve). The linter verifies all of this LIVE against the
+GitHub API and fails closed when it cannot check. The diagnostic
+spells out the full protocol: seek an off-the-shelf parser first;
+request approval with a complete inventory of the strictly necessary
+cases; remove everything not covered by the approval.
+
+The old protocol (supervisor discussion + unlinked header) is gone.
+
+The protocol when it fires (and in the diagnostic):
+
+1. first check that no std function or external crate already does
+   this parsing job;
+2. if hand-rolling is necessary, agree on the approach and design
+   with a human supervisor;
+3. once agreed, isolate the parser in a submodule headed by
+
+```rust
+use ...;
+
+/// WARNING: CUSTOM PARSER — why this parser must be hand-written
+```
+
+   with only `use` directives (and crate attributes / blank lines)
+   above the explanation. Files carrying that header are exempt from
+   the lint wholesale. `#[allow(custom_parser)]` remains the per-site
+   escape.

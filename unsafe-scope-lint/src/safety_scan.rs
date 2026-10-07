@@ -1,15 +1,5 @@
 use rustc_lint::LateContext;
 
-/// WARNING: CUSTOM PARSER — this module implements the
-/// `unsound_constructor` lint's SAFETY-comment detection (issue
-/// servyi/lints#8; placement review in #10, self-apply review in
-/// #11): it walks the compiler's own token stream (`rustc_lexer`)
-/// backwards from a construction site and hand-scans comment text.
-/// No std function or external crate provides backward
-/// comment-block walking over source offsets, so this parser is
-/// hand-written on purpose (supervisor discussion: PR #10/#11
-/// reviews, 2026-10-06).
-
     /// True when a SAFETY comment sits in the contiguous comment block
     /// directly above `span` (attributes between it and the span are
     /// skipped). Comment extraction uses `rustc_lexer` — the compiler's

@@ -1,0 +1,12 @@
+[package]
+name = "lint-custom-parser"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+servyi-lint-core = { path = "../servyi-lint-core" }
+pulldown-cmark = "0.13"
+serde_json = "1"
+url = "2"
+regex = "1"

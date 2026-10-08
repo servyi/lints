@@ -1,15 +1,1 @@
-/target/
-*.rs.bk
-
-# compiled fixture binaries (rustc writes crate-named output to the
-# CWD when fixtures are compiled without --out-dir). Root whitelist:
-# the repository's real content is the four entries below — anything
-# else at the top level (stray fixture executables, whatever rustc
-# emits next) is ignored. Fixtures also compile to target/fixture-out
-# in CI, so the strays should not appear at all.
-/*
-!/README.md
-!/.gitignore
-!/.github/
-!/tests/
-!/unsafe-scope-lint/
+/target

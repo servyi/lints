@@ -1,0 +1,9 @@
+[package]
+name = "lint-inline-literal"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+servyi-lint-core = { path = "../servyi-lint-core" }
+text2num = "2.8.0"

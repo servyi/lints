@@ -23,6 +23,7 @@ fn main() {
     let fields: Vec<&str> = EMPTY.split(FIELD_SEP).collect();
     assert!(!fields.is_empty(), "there is always one field");
     log_line(MESSAGE_DONE);
+    log_line("");
     let outcome: Result<(), String> = Err("nothing to do".to_string());
     let next = FIRST_INDEX + 1;
     let half = capacity_limit() / 2;

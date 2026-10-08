@@ -6,3 +6,4 @@ publish = false
 
 [dependencies]
 servyi-lint-core = { path = "../servyi-lint-core" }
+text2num = "2.8.0"

@@ -80,21 +80,25 @@ const MESSAGE_MACROS: &[&str] = &[
     "info", "debug", "trace", "warn", "error",
 ];
 
-/// The English number words (review on #16: a constant NAME made only
-/// of these restates the value instead of its semantics).
-const NUMBER_WORDS: &[&str] = &[
-    "zero", "one", "two", "three", "four", "five", "six", "seven",
-    "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
-    "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
-    "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
-    "hundred", "thousand", "million", "billion",
-];
-
 /// True when `ident` consists only of number words (`ZERO`,
 /// `FORTY_NINE`, `SIX_HUNDRED`): the name IS a number, not a meaning.
+/// Each `_`-separated part is parsed by `text2num` — the off-the-shelf
+/// English-number parser (review on #16: no hand-rolled word table).
 fn is_number_name(ident: &str) -> bool {
-    !ident.is_empty()
-        && ident.split('_').all(|part| NUMBER_WORDS.contains(&part.to_lowercase().as_str()))
+    !ident.is_empty() && ident.split('_').all(part_is_number_word)
+}
+
+/// One name component parses as a number word (text2num accepts the
+/// empty string, hence the guard).
+fn part_is_number_word(part: &str) -> bool {
+    if part.is_empty() {
+        return false;
+    }
+    static EN: std::sync::OnceLock<Option<text2num::Language>> = std::sync::OnceLock::new();
+    match EN.get_or_init(|| text2num::get_interpreter_for("en")) {
+        Some(en) => text2num::text2digits(&part.to_lowercase(), en).is_ok(),
+        None => false,
+    }
 }
 
 /// Normalize for the string-name comparison (review on #16): case
@@ -109,6 +113,27 @@ fn name_value_key(s: &str) -> String {
 fn name_is_string_value(ident: &str, value: &str) -> bool {
     let key = name_value_key(value);
     !key.is_empty() && name_value_key(ident) == key
+}
+
+/// Additional message-macros/-functions registered by the CONSUMER
+/// (review on #16): names in the `SERVYI_MESSAGE_MACROS` environment
+/// variable (comma/space separated) extend the message positions —
+/// macros by expansion name, functions by callee name. For example a
+/// project's `log_error!` macro or `fail(msg)` helper carries
+/// message strings just like `Err(...)` does. Read once per process.
+fn registered_message_names() -> &'static [String] {
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        std::env::var("SERVYI_MESSAGE_MACROS")
+            .map(|v| {
+                v.split([',', ' ', ';'])
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
 }
 
 impl<'tcx> LateLintPass<'tcx> for Pass {
@@ -148,6 +173,11 @@ impl<'tcx> LateLintPass<'tcx> for Pass {
         match lit.node {
             LitKind::Bool(_) => {}
             LitKind::Str(..) | LitKind::ByteStr(..) | LitKind::CStr(..) => {
+                // An EMPTY string is always permitted (review on #16):
+                // it carries no value to name — it is absence itself.
+                if literal_symbol_is_empty(&lit.node) {
+                    return;
+                }
                 // A string inside a string is forbidden ANYWHERE (issue
                 // #7) — checked before the sanctioned positions.
                 if string_contains_string(cx, e) {
@@ -276,6 +306,17 @@ fn check_value_named_const<'tcx>(
     }
 }
 
+/// True for string-kind literals with empty content (`""`, `b""`,
+/// `c""` — cooked or raw).
+fn literal_symbol_is_empty(kind: &LitKind) -> bool {
+    match kind {
+        LitKind::Str(v, _) => v.as_str().is_empty(),
+        LitKind::ByteStr(v, _) => v.as_byte_str().is_empty(),
+        LitKind::CStr(v, _) => v.as_byte_str().is_empty(),
+        _ => false,
+    }
+}
+
 /// True when the literal's file snippet carries a `"` beyond the
 /// opening/closing delimiters — the escaped (`"a \"b\""`) and raw
 /// (`r#"a"b"#`) shapes of a string inside a string alike.
@@ -325,6 +366,7 @@ fn in_const_context<'tcx>(cx: &LateContext<'tcx>, e: &hir::Expr<'tcx>) -> bool {
 /// `format!`, ... — as in `Err("...".to_string())`).
 fn in_message_position<'tcx>(cx: &LateContext<'tcx>, e: &hir::Expr<'tcx>) -> bool {
     let debug = std::env::var_os("INLINE_LITERAL_DEBUG").is_some();
+    let registered = registered_message_names();
     // (a) inside a message macro. The literal's own hygiene is root
     // (format-args capture keeps the original span), so the check
     // walks the ANCESTORS' expansion chains: some ancestor of the
@@ -336,12 +378,28 @@ fn in_message_position<'tcx>(cx: &LateContext<'tcx>, e: &hir::Expr<'tcx>) -> boo
                     if debug {
                         eprintln!("inline_literal: ancestor macro: {}", name.as_str());
                     }
-                    if MESSAGE_MACROS.contains(&name.as_str()) {
+                    // Registered macros match by their bare expansion
+                    // name (user macros are never $crate::-qualified).
+                    let name = name.as_str();
+                    if MESSAGE_MACROS.contains(&name)
+                        || registered.iter().any(|r| r == name)
+                    {
                         return true;
                     }
                 }
             }
-            // (b) inside a `Result::Err(...)`: the callee must resolve
+            // (b) a registered message FUNCTION: consumer-declared via
+            // `SERVYI_MESSAGE_MACROS` (review on #16), matched by
+            // callee name (last path segment).
+            if let ExprKind::Call(callee, _) = pe.kind
+                && let ExprKind::Path(qpath) = &callee.kind
+                && let hir::QPath::Resolved(_, path) = qpath
+                && let Some(seg) = path.segments.last()
+                && registered.iter().any(|r| r == seg.ident.as_str())
+            {
+                return true;
+            }
+            // (c) inside a `Result::Err(...)`: the callee must resolve
             // to THE Err variant constructor of core's Result — user
             // enums with their own `Err` variant do not count.
             if let ExprKind::Call(callee, _) = pe.kind

@@ -179,7 +179,9 @@ declarations, except:
   reusable constant;
 * the trivial numerics: `1` under `+`/`-` (or negated), `2` under
   `*`/`/`, and a `0` argument of a call (zero-initialization);
-* `bool` literals — `true`/`false` spell their own semantics.
+* `bool` literals — `true`/`false` spell their own semantics;
+* EMPTY strings (`"`, `r""`, `b""`) anywhere — absence has no
+  value to name (review on #16).
 
 Forbidden ANYWHERE (even inside the sanctioned positions and in const
 declarations): string literals containing another string literal
@@ -192,7 +194,29 @@ semantics; 2) if the value is a NECESSITY (e.g. `+= 8` for counting
 boxes of eights), it should just use an `#[allow(inline_literal)]`.
 Anonymous consts — array lengths, const-generic arguments — are NOT
 naming sites: the initial buffer size is exactly the choice to name.
-Explicit enum discriminants are. Rollout is WARN-first in this repo's
+Explicit enum discriminants are. A constant may not NAME its value (review on #16): numeric names
+(`ZERO`, `FORTY_NINE` — recognized by running `text2num`, the
+off-the-shelf English-number parser, on each `_`-separated part) and
+string names equal to the string up to case/space/`_` (`PATH =
+"PATH"`, `HOME_DIR = "home dir"`) are flagged: the name restating
+the value indicates a necessity, and necessities stay inline with an
+`#[allow]`.
+
+### Registering project message macros/functions
+
+Message positions beyond the built-ins (`Err(...)`, `assert!`,
+`println!`, the log macros, ...) can be declared by setting
+`SERVYI_MESSAGE_MACROS` to a comma/space-separated list of names —
+macros match by expansion name, plain functions by callee name, so a
+project's `log_error!` or `fail(msg)` carries message strings too:
+
+```bash
+SERVYI_MESSAGE_MACROS="log_error fail" cargo check ...
+```
+
+(via `[env]` in `.cargo/config.toml` it travels with the repo).
+
+Rollout is WARN-first in this repo's
 self-apply (`-W inline_literal`); the bad/good fixture batteries deny
 it per-file.
 

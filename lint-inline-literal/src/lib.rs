@@ -31,6 +31,7 @@
 #![feature(rustc_private)]
 #![allow(internal_features)]
 extern crate rustc_ast;
+extern crate rustc_driver;
 extern crate rustc_errors;
 extern crate rustc_hir;
 extern crate rustc_lint;
@@ -123,17 +124,37 @@ fn name_is_string_value(ident: &str, value: &str) -> bool {
 /// message strings just like `Err(...)` does. Read once per process.
 fn registered_message_names() -> &'static [String] {
     static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    NAMES.get_or_init(|| {
-        std::env::var("SERVYI_MESSAGE_MACROS")
-            .map(|v| {
-                v.split([',', ' ', ';'])
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default()
-    })
+    NAMES.get_or_init(|| parse_registered_names(&std::env::var("SERVYI_MESSAGE_MACROS").unwrap_or_default()))
+}
+
+/// The `SERVYI_MESSAGE_MACROS` grammar: names separated by commas,
+/// spaces or semicolons; empty entries drop out.
+fn parse_registered_names(raw: &str) -> Vec<String> {
+    raw.split([',', ' ', ';'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_registered_names;
+
+    /// Review on #16: a registered name must survive exactly as
+    /// written, and the separators are interchangeable.
+    #[test]
+    fn registered_names_parse() {
+        assert_eq!(
+            parse_registered_names("log_error fail"),
+            ["log_error", "fail"],
+        );
+        assert_eq!(
+            parse_registered_names("log_error,fail ;  third_one "),
+            ["log_error", "fail", "third_one"],
+        );
+        assert!(parse_registered_names(" , ;; ").is_empty());
+    }
 }
 
 impl<'tcx> LateLintPass<'tcx> for Pass {

@@ -190,6 +190,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lint-inline-literal"
+version = "0.1.0"
+dependencies = [
+ "servyi-lint-core",
+]
+
+[[package]]
 name = "lint-non-test-panic-allow"
 version = "0.1.0"
 dependencies = [
@@ -367,6 +374,7 @@ name = "servyi-lint"
 version = "0.1.0"
 dependencies = [
  "lint-custom-parser",
+ "lint-inline-literal",
  "lint-non-test-panic-allow",
  "lint-unsafe-scope",
  "lint-unsound-constructor",

@@ -9,6 +9,9 @@
 //!   that requires unsafe, everything else hoisted out).
 //! - `lint-custom-parser` — `custom_parser` (issue #9): hand-parsing
 //!   primitives only inside sanctioned, maintainer-approved modules.
+//! - `lint-inline-literal` — `inline_literal` (issue #7): inline
+//!   literals outside const declarations, except message strings and
+//!   the trivial numerics.
 //! - `lint-unsound-constructor` — `unsound_constructor` (issue #8):
 //!   `#[servyi::unsound_constructor]` types carry SAFETY comments at
 //!   the type and at every construction site.
@@ -38,6 +41,7 @@ impl rustc_driver::Callbacks for LintCallbacks {
                 prev(sess, store);
             }
             lint_custom_parser::register(store);
+            lint_inline_literal::register(store);
             lint_non_test_panic_allow::register(store);
             lint_unsafe_scope::register(store);
             lint_unsound_constructor::register(store);

@@ -18,6 +18,13 @@
 //! const declarations: string literals containing another string
 //! literal.
 //!
+//! A constant may not NAME its value (review on #16): a numeric name
+//! (`ZERO`, `FORTY_NINE`) or a string name equal to the string (up to
+//! case, space, `_`) restates the value instead of giving it
+//! semantics — the tell that the value is a NECESSITY, and
+//! necessities belong inline with `#[allow(inline_literal)]`, not
+//! laundered into a meaninglessly-named const.
+//!
 //! Everything else must live in a `const`/`static` initializer or an
 //! explicit enum discriminant (the naming sites).
 
@@ -44,7 +51,10 @@ declare_lint! {
     /// literal is a constant without a name: if its value is a choice it
     /// needs a semantically named const; if it is a necessity the site
     /// needs an `#[allow]` (issue #7). String literals inside other
-    /// string literals are forbidden everywhere.
+    /// string literals are forbidden everywhere, and a constant may not
+    /// NAME its value (numeric names, string names equal to the string) —
+    /// that is a necessity laundered into a meaningless name (review on
+    /// #16).
     pub INLINE_LITERAL,
     Warn,
     "inline literal outside a const declaration (issue #7)"
@@ -70,7 +80,66 @@ const MESSAGE_MACROS: &[&str] = &[
     "info", "debug", "trace", "warn", "error",
 ];
 
+/// The English number words (review on #16: a constant NAME made only
+/// of these restates the value instead of its semantics).
+const NUMBER_WORDS: &[&str] = &[
+    "zero", "one", "two", "three", "four", "five", "six", "seven",
+    "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+    "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
+    "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+    "hundred", "thousand", "million", "billion",
+];
+
+/// True when `ident` consists only of number words (`ZERO`,
+/// `FORTY_NINE`, `SIX_HUNDRED`): the name IS a number, not a meaning.
+fn is_number_name(ident: &str) -> bool {
+    !ident.is_empty()
+        && ident.split('_').all(|part| NUMBER_WORDS.contains(&part.to_lowercase().as_str()))
+}
+
+/// Normalize for the string-name comparison (review on #16): case
+/// folds and keeps only alphanumerics, so space and `_` (and any
+/// punctuation) do not count as difference.
+fn name_value_key(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_alphanumeric()).flat_map(|c| c.to_lowercase()).collect()
+}
+
+/// True when the const's name equals its string value up to
+/// case/space/`_` (`PATH: &str = "PATH"`, `HOME_DIR = "home dir"`).
+fn name_is_string_value(ident: &str, value: &str) -> bool {
+    let key = name_value_key(value);
+    !key.is_empty() && name_value_key(ident) == key
+}
+
 impl<'tcx> LateLintPass<'tcx> for Pass {
+    fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx hir::Item<'tcx>) {
+        match item.kind {
+            hir::ItemKind::Const(ident, _, _, rhs) => {
+                let Some(init) = const_rhs_expr(cx, &rhs) else { return };
+                check_value_named_const(cx, ident.name.as_str(), item.span, init);
+            }
+            hir::ItemKind::Static(_, ident, _, body) => {
+                let init = cx.tcx.hir_body(body).value;
+                check_value_named_const(cx, ident.name.as_str(), item.span, init);
+            }
+            _ => {}
+        }
+    }
+
+    fn check_trait_item(&mut self, cx: &LateContext<'tcx>, ti: &'tcx hir::TraitItem<'tcx>) {
+        let hir::TraitItemKind::Const(_, Some(rhs)) = ti.kind else { return };
+        let Some(init) = const_rhs_expr(cx, &rhs) else { return };
+        let ident = ti.ident.name.as_str();
+        check_value_named_const(cx, ident, ti.span, init);
+    }
+
+    fn check_impl_item(&mut self, cx: &LateContext<'tcx>, ii: &'tcx hir::ImplItem<'tcx>) {
+        let hir::ImplItemKind::Const(_, rhs) = ii.kind else { return };
+        let Some(init) = const_rhs_expr(cx, &rhs) else { return };
+        let ident = ii.ident.name.as_str();
+        check_value_named_const(cx, ident, ii.span, init);
+    }
+
     fn check_expr(&mut self, cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) {
         let ExprKind::Lit(lit) = &e.kind else { return };
         if !servyi_lint_core::is_active(cx, INLINE_LITERAL) {
@@ -139,6 +208,72 @@ fn emit(cx: &LateContext<'_>, span: rustc_span::Span, what: &str) {
             ));
         }),
     );
+}
+
+/// The initializer expression of a const item's right-hand side,
+/// when it is a plain body we can look at (`const X: T = <expr>;`).
+fn const_rhs_expr<'tcx>(
+    cx: &LateContext<'tcx>,
+    rhs: &hir::ConstItemRhs<'tcx>,
+) -> Option<&'tcx hir::Expr<'tcx>> {
+    match rhs {
+        hir::ConstItemRhs::Body(id) => Some(cx.tcx.hir_body(*id).value),
+        hir::ConstItemRhs::Direct(_) => None, // path/`{ anon }` forms carry no literal to name
+    }
+}
+
+/// The naming-site check (review on #16): a constant whose NAME states
+/// the VALUE — a numeric name for a number, or a name equal to the
+/// string up to case/space/`_` — has no semantics; the name existing
+/// at all indicates the value is a necessity, and necessities belong
+/// inline at their use with `#[allow(inline_literal)]`.
+fn check_value_named_const<'tcx>(
+    cx: &LateContext<'tcx>,
+    ident: &str,
+    span: rustc_span::Span,
+    init: &'tcx hir::Expr<'tcx>,
+) {
+    if !servyi_lint_core::is_active(cx, INLINE_LITERAL) {
+        return;
+    }
+    let ExprKind::Lit(lit) = &init.kind else { return };
+    let why = match &lit.node {
+        LitKind::Int(..) | LitKind::Float(..) => {
+            is_number_name(ident).then(|| {
+                format!(
+                    "the constant `{ident}` is NAMED as a number (review on \
+                     servyi/lints#16): a name that restates the value carries no \
+                     semantics — it indicates the value is a NECESSITY, and \
+                     necessary constants should stay inline at their use with an \
+                     `#[allow(inline_literal)]`, not be laundered into a \
+                     meaninglessly-named const. If the value is a CHOICE, name \
+                     what it means for the program (e.g. `INITIAL_RETRY_BACKOFF_MS`)"
+                )
+            })
+        }
+        LitKind::Str(v, _) => {
+            name_is_string_value(ident, &v.as_str()).then(|| {
+                format!(
+                    "the constant `{ident}` is NAMED as its own value (review on \
+                     servyi/lints#16): a name that restates the string carries no \
+                     semantics — it indicates the value is a NECESSITY, and \
+                     necessary constants should stay inline at their use with an \
+                     `#[allow(inline_literal)]`. If the value is a CHOICE, name \
+                     what it means for the program (e.g. `FIELD_SEP`, not `COMMA`)"
+                )
+            })
+        }
+        _ => None,
+    };
+    if let Some(note) = why {
+        cx.opt_span_lint(
+            INLINE_LITERAL,
+            Some(span),
+            DiagDecorator(|diag| {
+                diag.note(note);
+            }),
+        );
+    }
 }
 
 /// True when the literal's file snippet carries a `"` beyond the

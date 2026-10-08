@@ -205,16 +205,28 @@ the value indicates a necessity, and necessities stay inline with an
 ### Registering project message macros/functions
 
 Message positions beyond the built-ins (`Err(...)`, `assert!`,
-`println!`, the log macros, ...) can be declared by setting
-`SERVYI_MESSAGE_MACROS` to a comma/space-separated list of names —
-macros match by expansion name, plain functions by callee name, so a
-project's `log_error!` or `fail(msg)` carries message strings too:
+`println!`, the log macros, ...) are declared IN THE CLIENT'S CODE
+(review on #16) with the `register_message!` macro:
 
-```bash
-SERVYI_MESSAGE_MACROS="log_error fail" cargo check ...
+```rust
+macro_rules! register_message {
+    ($m:ident) => {
+        #[allow(dead_code)]
+        const _: &[(&str, &str)] = &[("servyi::message", stringify!($m))];
+    };
+}
+
+register_message!(log_error);   // your message MACRO
+register_message!(fail);        // ...or plain message FUNCTION
 ```
 
-(via `[env]` in `.cargo/config.toml` it travels with the repo).
+The invocation leaves a marker const the linter recognizes; macros
+match by expansion name, functions by callee name, so
+`log_error!("disk full")` and `fail("hardware fault")` carry message
+strings exactly like `Err(...)` does. Registration is per-crate:
+each crate registers the macros and functions it uses (typically
+next to their definitions). Paste the macro, or re-export it through
+your own facade as `servyi::register_message!`.
 
 Rollout is WARN-first in this repo's
 self-apply (`-W inline_literal`); the bad/good fixture batteries deny

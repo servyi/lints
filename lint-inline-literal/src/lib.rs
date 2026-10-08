@@ -63,12 +63,57 @@ declare_lint! {
 
 pub fn register(store: &mut rustc_lint::LintStore) {
     store.register_lints(&[INLINE_LITERAL]);
-    store.register_late_lint_pass(Box::new(|_| Box::new(Pass)));
+    store.register_late_lint_pass(Box::new(|_| Box::new(Pass { registered: Vec::new() })));
 }
 
-pub struct Pass;
+pub struct Pass {
+    /// Message names the client registered via `register_message!`
+    /// markers, collected once in `check_crate` (before any body is
+    /// checked, so registration order in the file never matters).
+    registered: Vec<String>,
+}
 
 impl_lint_pass!(Pass => [INLINE_LITERAL]);
+
+/// Walks the crate collecting `register_message!` marker consts:
+/// `const _: &[(&str, &str)] = &[("servyi::message", stringify!(name))]`.
+struct MarkerCollector<'a, 'tcx> {
+    cx: &'a LateContext<'tcx>,
+    out: &'a mut Vec<String>,
+}
+
+impl<'a, 'tcx> MarkerCollector<'a, 'tcx> {
+    fn collect_item(&mut self, item: &'tcx rustc_hir::Item<'tcx>) {
+        let rustc_hir::ItemKind::Const(_, _, _, rhs) = item.kind else { return };
+        let rustc_hir::ConstItemRhs::Body(body_id) = rhs else { return };
+        let value = self.cx.tcx.hir_body(body_id).value;
+        // `&[("servyi::message", stringify!(name))]`: unwrap the borrow.
+        let inner = match value.kind {
+            rustc_hir::ExprKind::Array(_) => value,
+            rustc_hir::ExprKind::AddrOf(_, _, inner) => inner,
+            _ => return,
+        };
+        let rustc_hir::ExprKind::Array(els) = inner.kind else { return };
+        if els.len() != 1 {
+            return;
+        }
+        let rustc_hir::ExprKind::Tup(pair) = els[0].kind else { return };
+        if pair.len() != 2 {
+            return;
+        }
+        let (rustc_hir::ExprKind::Lit(a), rustc_hir::ExprKind::Lit(b)) = (&pair[0].kind, &pair[1].kind)
+        else {
+            return;
+        };
+        let (rustc_ast::LitKind::Str(tag, _), rustc_ast::LitKind::Str(name, _)) = (&a.node, &b.node)
+        else {
+            return;
+        };
+        if tag.as_str() == MESSAGE_MARKER_TAG && !name.as_str().is_empty() {
+            self.out.push(name.as_str().to_string());
+        }
+    }
+}
 
 /// The macros whose string arguments are messages (report/failure
 /// prose), per issue #7: `Err("...")`, `assert!`, `println!`, log, etc.
@@ -116,48 +161,40 @@ fn name_is_string_value(ident: &str, value: &str) -> bool {
     !key.is_empty() && name_value_key(ident) == key
 }
 
-/// Additional message-macros/-functions registered by the CONSUMER
-/// (review on #16): names in the `SERVYI_MESSAGE_MACROS` environment
-/// variable (comma/space separated) extend the message positions —
-/// macros by expansion name, functions by callee name. For example a
-/// project's `log_error!` macro or `fail(msg)` helper carries
-/// message strings just like `Err(...)` does. Read once per process.
-fn registered_message_names() -> &'static [String] {
-    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    NAMES.get_or_init(|| parse_registered_names(&std::env::var("SERVYI_MESSAGE_MACROS").unwrap_or_default()))
-}
-
-/// The `SERVYI_MESSAGE_MACROS` grammar: names separated by commas,
-/// spaces or semicolons; empty entries drop out.
-fn parse_registered_names(raw: &str) -> Vec<String> {
-    raw.split([',', ' ', ';'])
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_registered_names;
-
-    /// Review on #16: a registered name must survive exactly as
-    /// written, and the separators are interchangeable.
-    #[test]
-    fn registered_names_parse() {
-        assert_eq!(
-            parse_registered_names("log_error fail"),
-            ["log_error", "fail"],
-        );
-        assert_eq!(
-            parse_registered_names("log_error,fail ;  third_one "),
-            ["log_error", "fail", "third_one"],
-        );
-        assert!(parse_registered_names(" , ;; ").is_empty());
-    }
-}
+/// The registration protocol (review on #16): a client declares its
+/// own message positions IN CODE, with the `register_message!` macro
+/// (documented in the README; pasteable, or re-exported through the
+/// client's own facade) —
+///
+/// ```ignore
+/// macro_rules! register_message {
+///     ($m:ident) => {
+///         #[allow(dead_code)]
+///         const _: &[(&str, &str)] = &[("servyi::message", stringify!($m))];
+///     };
+/// }
+/// register_message!(log_error);   // the client's message macro
+/// register_message!(fail);        // ...or plain message function
+/// ```
+///
+/// — which leaves a marker const the lint recognizes. Registration is
+/// per-crate: each crate registers the macros and functions IT uses
+/// (the macro is typically registered next to its definition).
+const MESSAGE_MARKER_TAG: &str = "servyi::message";
 
 impl<'tcx> LateLintPass<'tcx> for Pass {
+    fn check_crate(&mut self, cx: &LateContext<'tcx>) {
+        if !servyi_lint_core::is_active(cx, INLINE_LITERAL) {
+            return;
+        }
+        // Collect the client's register_message! markers up front so
+        // registration order in the file never matters.
+        let mut collector = MarkerCollector { cx, out: &mut self.registered };
+        for item_id in cx.tcx.hir_free_items() {
+            collector.collect_item(cx.tcx.hir_item(item_id));
+        }
+    }
+
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx hir::Item<'tcx>) {
         match item.kind {
             hir::ItemKind::Const(ident, _, _, rhs) => {
@@ -205,7 +242,7 @@ impl<'tcx> LateLintPass<'tcx> for Pass {
                     emit(cx, e.span, "a string literal inside another string literal");
                     return;
                 }
-                if in_const_context(cx, e) || in_message_position(cx, e) {
+                if in_const_context(cx, e) || in_message_position(cx, e, &self.registered) {
                     return;
                 }
                 emit(cx, e.span, "a string literal outside message position");
@@ -385,9 +422,12 @@ fn in_const_context<'tcx>(cx: &LateContext<'tcx>, e: &hir::Expr<'tcx>) -> bool {
 /// expansion chain, or a `Result::Err(...)` call anywhere up the
 /// expression chain (the string may be wrapped — `.to_string()`,
 /// `format!`, ... — as in `Err("...".to_string())`).
-fn in_message_position<'tcx>(cx: &LateContext<'tcx>, e: &hir::Expr<'tcx>) -> bool {
+fn in_message_position<'tcx>(
+    cx: &LateContext<'tcx>,
+    e: &hir::Expr<'tcx>,
+    registered: &[String],
+) -> bool {
     let debug = std::env::var_os("INLINE_LITERAL_DEBUG").is_some();
-    let registered = registered_message_names();
     // (a) inside a message macro. The literal's own hygiene is root
     // (format-args capture keeps the original span), so the check
     // walks the ANCESTORS' expansion chains: some ancestor of the

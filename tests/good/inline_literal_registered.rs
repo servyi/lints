@@ -23,5 +23,6 @@ fn fail(message: &str) {
 
 fn main() {
     log_error!(SPUN_DOWN);
+    log_error!("motor stalled");
     fail("hardware fault");
 }

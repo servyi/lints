@@ -1,14 +1,17 @@
 # servyi/lints
 
-Custom Rust lints maintained as rustc-driver wrappers. Each directory is one
-installable lint; see its README for usage.
+Custom Rust lints maintained as one rustc-driver wrapper (`servyi-lint`) over
+a workspace with one crate per lint (issue #12), plus a shared-plumbing lib
+crate; see the [driver README](servyi-lint/README.md) for usage.
 
-| lint | tool | what it does |
+| lint | crate | what it does |
 |---|---|---|
-| [`unsafe-scope-lint/`](unsafe-scope-lint/README.md) | this repo (RUSTC_WRAPPER driver) | `unsafe_scope`: `unsafe` blocks may contain only reads of existing bindings plus a single operation that requires unsafe |
-| | | `workspace_lints_table`: the workspace-level Cargo.toml must define no lints (they would drift from the CI flag list) |
-| | | `non_test_panic_allow`: `#[allow]`/`#[expect]` of `clippy::panic`/`clippy::unwrap_used` outside test code — tests are the only sanctioned exemption (`cfg_attr(test, ...)`, `#[cfg(test)]` modules, integration tests) |
-| | | `unsound_constructor`: types marked `#[servyi::unsound_constructor]` (requires `#![register_tool(servyi)]`) must document the constructor's safety preconditions in a `/// SAFETY` comment above the struct, and every construction site must argue them in a `// SAFETY` comment directly above the literal |
+| `unsafe_scope` | [`lint-unsafe-scope/`](lint-unsafe-scope/) | `unsafe` blocks may contain only reads of existing bindings plus a single operation that requires unsafe |
+| `workspace_lints_table` | [`lint-workspace-lints-table/`](lint-workspace-lints-table/) | the workspace-level Cargo.toml must define no lints (they would drift from the CI flag list) |
+| `non_test_panic_allow` | [`lint-non-test-panic-allow/`](lint-non-test-panic-allow/) | `#[allow]`/`#[expect]` of `clippy::panic`/`clippy::unwrap_used` outside test code — tests are the only sanctioned exemption (`cfg_attr(test, ...)`, `#[cfg(test)]` modules, integration tests) |
+| `unsound_constructor` | [`lint-unsound-constructor/`](lint-unsound-constructor/) | types marked `#[servyi::unsound_constructor]` (requires `#![register_tool(servyi)]`) must document the constructor's safety preconditions in a `/// SAFETY` comment above the struct, and every construction site must argue them in a `// SAFETY` comment directly above the literal |
+| `custom_parser` | [`lint-custom-parser/`](lint-custom-parser/) | hand-parsing primitives only inside sanctioned custom-parser modules headed by a maintainer-approved `WARNING: CUSTOM PARSER` header (issue #9) |
+| `inline_literal` | [`lint-inline-literal/`](lint-inline-literal/) | inline literals outside const declarations — message strings, the trivial numerics (`+1`/`-1`, `*2`/`/2`, a `0` call argument), and bools excepted; strings inside strings forbidden anywhere (issue #7) |
 
 ## Shared lint policy (classic rules)
 
@@ -88,15 +91,15 @@ from source:
         with:
           toolchain: nightly-2026-09-21
           components: rustc-dev, clippy
-      - run: cargo build --manifest-path lints/unsafe-scope-lint/Cargo.toml
+      - run: cargo build --manifest-path lints/servyi-lint/Cargo.toml
       # classic rules: clippy with the shared flag list (see
       # .github/actions/lint-policy/action.yml in this repo)
       - run: >
           CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/clippy-check"
           cargo clippy --workspace --all-targets -- -D warnings
-      # custom rule: the unsafe-scope driver
+      # custom rules: the servyi-lint driver
       - run: >
-          RUSTC_WRAPPER="$GITHUB_WORKSPACE/lints/unsafe-scope-lint/target/debug/unsafe-scope-lint"
+          RUSTC_WRAPPER="$GITHUB_WORKSPACE/lints/target/debug/servyi-lint"
           RUSTFLAGS="-D unsafe_scope"
           CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/nightly-check"
           cargo check --workspace --all-targets

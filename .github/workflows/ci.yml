@@ -20,14 +20,14 @@ jobs:
           toolchain: nightly-2026-09-21
           components: rustc-dev, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: build driver
-        run: cargo build --manifest-path unsafe-scope-lint/Cargo.toml
+      - name: build the driver workspace
+        run: cargo build
       - name: unsound_constructor bad fixtures must be denied (each case individually)
         run: |
           set +e
           fail=0
           for f in tests/bad/unsound_constructor/*.rs; do
-            ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
+            ./target/debug/servyi-lint \
               "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D unsound_constructor >/dev/null 2>&1
             rc=$?
             if [ $rc -eq 0 ]; then
@@ -42,7 +42,7 @@ jobs:
           set +e
           fail=0
           for f in tests/bad/unsafe_scope/*.rs; do
-            ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
+            ./target/debug/servyi-lint \
               "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D unsafe_scope -D non_test_panic_allow -D unsound_constructor >/dev/null 2>&1
             rc=$?
             if [ "$rc" -eq 0 ]; then echo "FAIL: $f was not caught"; fail=1; fi
@@ -53,23 +53,53 @@ jobs:
           set +e
           fail=0
           for f in tests/bad/custom_parser/*.rs; do
-            ./unsafe-scope-lint/target/debug/unsafe-scope-lint               "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D custom_parser >/dev/null 2>&1
+            ./target/debug/servyi-lint \
+              "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D custom_parser >/dev/null 2>&1
             rc=$?
             if [ "$rc" -eq 0 ]; then echo "FAIL: $f was not caught"; fail=1; fi
           done
           exit $fail
-      - name: the driver lints ITSELF (self-apply — review on #11)
+      - name: inline_literal bad fixtures must be denied (each case individually)
         run: |
-          RUSTC_WRAPPER="$PWD/unsafe-scope-lint/target/debug/unsafe-scope-lint" \
-          RUSTFLAGS="-D unsafe_scope -D custom_parser -D non_test_panic_allow -D unsound_constructor" \
+          set +e
+          fail=0
+          for f in tests/bad/inline_literal/*.rs; do
+            ./target/debug/servyi-lint \
+              "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D inline_literal >/dev/null 2>&1
+            rc=$?
+            if [ "$rc" -eq 0 ]; then echo "FAIL: $f was not caught"; fail=1; fi
+          done
+          exit $fail
+      - name: registered message positions (review on #16)
+        run: |
+          set +e
+          # the good loop below covers the with-markers case; here the
+          # same file WITHOUT its registrations must be denied
+          sed '/register_message!(log_error);/d;/register_message!(fail);/d' \
+            tests/good/inline_literal_registered.rs > /tmp/unregistered.rs
+          ./target/debug/servyi-lint /tmp/unregistered.rs --crate-type bin --edition 2021 \
+            --out-dir target/fixture-out -D inline_literal >/dev/null 2>&1
+          rc=$?
+          if [ $rc -eq 0 ]; then
+            echo "FAIL: unregistered message positions were not denied"
+            exit 1
+          fi
+      - name: the collection lints ITSELF (self-apply — review on #11)
+        run: |
+          RUSTC_WRAPPER="$PWD/target/debug/servyi-lint" \
+          RUSTFLAGS="-D unsafe_scope -D custom_parser -D non_test_panic_allow -D unsound_constructor -D workspace_lints_table -W inline_literal" \
           CARGO_TARGET_DIR=target/self-apply \
-          cargo +nightly-2026-09-21 check --manifest-path unsafe-scope-lint/Cargo.toml
+          cargo +nightly-2026-09-21 check --workspace
+      - name: unit tests
+        run: |
+          cargo +nightly-2026-09-21 test -p lint-workspace-lints-table
+          cargo +nightly-2026-09-21 test -p lint-inline-literal
       - name: clippy-owned bad fixtures must pass the driver (owned by classic lints)
         run: |
           set +e
           fail=0
           for f in tests/bad/clippy/*.rs; do
-            ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
+            ./target/debug/servyi-lint \
               "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D unsafe_scope -D non_test_panic_allow -D unsound_constructor >/dev/null 2>&1
             rc=$?
             if [ "$rc" -ne 0 ]; then echo "FAIL: $f is not unsafe_scope's job"; fail=1; fi
@@ -84,21 +114,23 @@ jobs:
               -D clippy::multiple_unsafe_ops_per_block -D unused_unsafe \
               --out-dir target/clippy-fixture-out >/dev/null 2>&1
             rc=$?
-            if [ "$rc" -eq 0 ]; then echo "FAIL: $f was not caught by clippy list"; fail=1; fi
+            if [ $rc -eq 0 ]; then echo "FAIL: $f was not caught by clippy list"; fail=1; fi
           done
           exit $fail
       - name: good fixtures must pass driver AND clippy list
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # approval verification uses it when present (rate-limit roulette otherwise)
         run: |
           set +e
           fail=0
           for f in tests/good/*.rs; do
-            ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
-              "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D unsafe_scope -D custom_parser -D non_test_panic_allow -D unsound_constructor >/dev/null 2>&1
+            ./target/debug/servyi-lint \
+              "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D unsafe_scope -D custom_parser -D non_test_panic_allow -D unsound_constructor -D inline_literal >/dev/null 2>&1
             rc=$?
             if [ "$rc" -ne 0 ]; then
               echo "FAIL: $f produced a false positive in the driver"
-              ./unsafe-scope-lint/target/debug/unsafe-scope-lint \
-                "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D unsafe_scope -D custom_parser -D non_test_panic_allow || true
+              ./target/debug/servyi-lint \
+                "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D unsafe_scope -D custom_parser -D non_test_panic_allow -D inline_literal || true
               fail=1
             fi
             clippy-driver "$f" --crate-type bin --edition 2021 \
@@ -127,11 +159,9 @@ jobs:
           toolchain: nightly-2026-09-21
           components: rustc-dev
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: unsafe-scope-lint
-      - run: cargo build --release --manifest-path unsafe-scope-lint/Cargo.toml
+      - run: cargo build --release
       - uses: actions/upload-artifact@v4
         with:
-          name: unsafe-scope-lint-linux
-          path: unsafe-scope-lint/target/release/unsafe-scope-lint
+          name: servyi-lint-linux
+          path: target/release/servyi-lint
           if-no-files-found: error

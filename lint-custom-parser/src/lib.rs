@@ -186,16 +186,24 @@ fn verify_approval(url: &str) -> Approval {
     let Some(endpoint) = api_endpoint(url) else {
         return Approval::Rejected("not a github comment permalink".into());
     };
-    let out = std::process::Command::new("curl")
-        .args([
-            "-s",
-            "--max-time",
-            "10",
-            "-H",
-            "Accept: application/vnd.github+json",
-            &endpoint,
-        ])
-        .output();
+    // Authenticated when a token is available (CI exports
+    // GITHUB_TOKEN for exactly this); otherwise unauthenticated —
+    // shared-runner IPs are rate-limit roulette, but fail-closed
+    // only downgrades the NOTE, never the finding.
+    let mut args: Vec<String> = [
+        "-s".to_string(),
+        "--max-time".to_string(),
+        "10".to_string(),
+        "-H".to_string(),
+        "Accept: application/vnd.github+json".to_string(),
+    ]
+    .to_vec();
+    if let Some(tok) = std::env::var_os("GITHUB_TOKEN") {
+        args.push("-H".to_string());
+        args.push(format!("Authorization: Bearer {}", tok.to_string_lossy()));
+    }
+    args.push(endpoint.clone());
+    let out = std::process::Command::new("curl").args(&args).output();
     let out = match out {
         Ok(o) if o.status.success() => o,
         Ok(o) => {

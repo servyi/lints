@@ -325,6 +325,28 @@ fn is_binding_place<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) -> b
     }
 }
 
+/// A "pure read" for the strict-shape checks (review on #17): a
+/// binding read, OR a literal, OR a path to a const/static — plain
+/// values with no computation hiding behind them. The scope lint
+/// cares about WHERE the unsafe operation is and what it operates
+/// on, not about reading trivially pure values; literals and
+/// constants are as good as bindings on a value side or operand
+/// (`unsafe { *mp = 5 }`, `unsafe { COUNTER += STEP }` are fine).
+fn is_pure_read<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) -> bool {
+    if let ExprKind::Lit(_) = e.kind {
+        return true;
+    }
+    if let ExprKind::Path(qpath) = &e.kind
+        && matches!(
+            cx.typeck_results().qpath_res(qpath, e.hir_id),
+            hir::def::Res::Def(hir::def::DefKind::Const | hir::def::DefKind::Static { .. }, _)
+        )
+    {
+        return true;
+    }
+    is_binding_place(cx, e)
+}
+
 /// True when `e` is an ancestor expression of `leaf_hir_id`.
 fn contains_leaf<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>, leaf_hir_id: HirId) -> bool {
     e.hir_id == leaf_hir_id || cx.tcx.hir_parent_iter(leaf_hir_id).any(|(id, _)| id == e.hir_id)
@@ -371,7 +393,7 @@ fn unwrap_to_leaf<'tcx>(
                 return None;
             };
             let leaf = unwrap_to_leaf(cx, place, leaf_hir_id, notes)?;
-            if !is_binding_place(cx, value) {
+            if !is_pure_read(cx, value) {
                 notes.push((
                     value.span,
                     format!(
@@ -400,7 +422,7 @@ fn check_body_expr<'tcx>(
         return; // inner block: covered by its own check_expr invocation
     }
     if leaves.is_empty() {
-        if !is_binding_place(cx, e) {
+        if !is_pure_read(cx, e) {
             notes.push((
                 e.span,
                 format!("{SHAPE_MSG}: this expression does not require unsafe"),
@@ -444,7 +466,7 @@ fn check_leaf_operands<'tcx>(
         _ => {}
     }
     for op in operands {
-        if !is_binding_place(cx, op) {
+        if !is_pure_read(cx, op) {
             notes.push((
                 op.span,
                 format!(

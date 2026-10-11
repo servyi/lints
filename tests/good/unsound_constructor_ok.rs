@@ -31,8 +31,10 @@ fn inside_braces(v: &mut u8) -> Handle<'_, u8> {
     }
 }
 
+const INITIAL: u8 = 0;
+
 fn main() {
-    let mut v = 0u8;
+    let mut v = INITIAL;
     let _ = doc_above(&mut v);
     let _ = block_style(&mut v);
     let _ = inside_braces(&mut v);

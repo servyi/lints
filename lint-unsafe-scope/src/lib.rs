@@ -411,7 +411,7 @@ impl<'tcx> LateLintPass<'tcx> for Pass {
             Some(b.span),
             DiagDecorator(|diag| {
                 for (span, msg) in &notes {
-                    diag.span_note(*span, msg.clone());
+                    let _ = diag.span_note(*span, msg.clone());
                 }
             }),
         );

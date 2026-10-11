@@ -186,16 +186,24 @@ fn verify_approval(url: &str) -> Approval {
     let Some(endpoint) = api_endpoint(url) else {
         return Approval::Rejected("not a github comment permalink".into());
     };
-    let out = std::process::Command::new("curl")
-        .args([
-            "-s",
-            "--max-time",
-            "10",
-            "-H",
-            "Accept: application/vnd.github+json",
-            &endpoint,
-        ])
-        .output();
+    // Authenticated when a token is available (CI exports
+    // GITHUB_TOKEN for exactly this); otherwise unauthenticated —
+    // shared-runner IPs are rate-limit roulette, but fail-closed
+    // only downgrades the NOTE, never the finding.
+    let mut args: Vec<String> = [
+        "-s".to_string(),
+        "--max-time".to_string(),
+        "10".to_string(),
+        "-H".to_string(),
+        "Accept: application/vnd.github+json".to_string(),
+    ]
+    .to_vec();
+    if let Some(tok) = std::env::var_os("GITHUB_TOKEN") {
+        args.push("-H".to_string());
+        args.push(format!("Authorization: Bearer {}", tok.to_string_lossy()));
+    }
+    args.push(endpoint.clone());
+    let out = std::process::Command::new("curl").args(&args).output();
     let out = match out {
         Ok(o) if o.status.success() => o,
         Ok(o) => {
@@ -239,7 +247,7 @@ type Cache = std::sync::Mutex<std::collections::HashMap<String, Approval>>;
 fn with_cache<R>(f: impl FnOnce(&mut std::collections::HashMap<String, Approval>) -> R) -> R {
     static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
     let mut guard = CACHE
-        .get_or_init(|| Cache::default())
+        .get_or_init(Cache::default)
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     f(&mut guard)
@@ -250,7 +258,7 @@ fn cached_approval(url: &str) -> Approval {
         return a;
     }
     let a = verify_approval(url);
-    with_cache(|c| c.insert(url.to_string(), a.clone()));
+    let _ = with_cache(|c| c.insert(url.to_string(), a.clone()));
     a
 }
 
@@ -291,15 +299,18 @@ fn check_parser_primitive<'tcx>(
     if std::env::var_os("CUSTOM_PARSER_DEBUG").is_some() {
         eprintln!("custom_parser: matched {why}; header lookup next");
     }
-    match file_approval_url(cx, e.span) {
-        Some(url) => match cached_approval(&url) {
+    // A header whose approval holds (sanctioned): done. An approval
+    // that does not hold — or cannot be verified (fail closed) —
+    // leaves the finding in place, with the reason attached.
+    if let Some(url) = file_approval_url(cx, e.span) {
+        match cached_approval(&url) {
             Approval::ApprovedBy(by) => {
                 if std::env::var_os("CUSTOM_PARSER_DEBUG").is_some() {
                     eprintln!("custom_parser: approved by {by}: {url}");
                 }
                 return;
             }
-            bad => {
+            bad @ (Approval::Rejected(_) | Approval::Unverifiable(_)) => {
                 cx.opt_span_lint(
                     CUSTOM_PARSER,
                     Some(e.span),
@@ -308,14 +319,13 @@ fn check_parser_primitive<'tcx>(
                     }),
                 );
             }
-        },
-        None => {}
+        }
     }
     cx.opt_span_lint(
         CUSTOM_PARSER,
         Some(e.span),
         DiagDecorator(|diag| {
-            diag.note(format!(
+            let _ = diag.note(format!(
                 "`{path}` is a hand-parsing primitive (issue servyi/lints#9) — this \
                  specific use of custom parsing needs a MAINTAINER APPROVAL. \
                  1) Check first that no std function or off-the-shelf crate/parser/lexer \
@@ -342,13 +352,13 @@ fn approval_failure_note(
 ) {
     match bad {
         Approval::Rejected(why) => {
-            diag.note(format!(
+            let _ = diag.note(format!(
                 "the header cites {url} but the approval does not hold: {why} — \
                  the finding stands"
             ));
         }
         Approval::Unverifiable(why) => {
-            diag.note(format!(
+            let _ = diag.note(format!(
                 "the header cites {url} which could not be verified ({why}) — \
                  FAIL CLOSED: the finding stands"
             ));

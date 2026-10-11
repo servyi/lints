@@ -28,7 +28,6 @@
 #![allow(internal_features)]
 extern crate rustc_driver;
 extern crate rustc_interface;
-extern crate rustc_lint;
 extern crate rustc_session;
 
 struct LintCallbacks;
@@ -49,6 +48,12 @@ impl rustc_driver::Callbacks for LintCallbacks {
         }));
     }
 }
+
+/// cargo's wrapper probe; delegation passes it (and the rest) to the
+/// wrapped compiler verbatim. The exit code matches rustc's own
+/// fatal-error convention.
+const PROBE_FLAG: &str = "--print=file-names";
+const PROBE_DELEGATION_EXIT: i32 = 101;
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -71,16 +76,17 @@ fn main() {
     // cargo probes the wrapper (`--print=file-names` et al.) to discover
     // target properties. Delegate such probes to the wrapped compiler
     // verbatim: this driver cannot answer them reliably across toolchains.
-    if rustc_path.is_some() && args.iter().any(|a| a == "--print=file-names") {
-        let real = rustc_path.as_deref().unwrap();
+    if let Some(real) = rustc_path.as_deref()
+        && args.iter().any(|a| a == PROBE_FLAG)
+    {
         let status = std::process::Command::new(real)
             .args(&args)
             .status()
             .unwrap_or_else(|e| {
                 eprintln!("servyi-lint: probe delegation failed: {e}");
-                std::process::exit(101);
+                std::process::exit(PROBE_DELEGATION_EXIT);
             });
-        std::process::exit(status.code().unwrap_or(101));
+        std::process::exit(status.code().unwrap_or(PROBE_DELEGATION_EXIT));
     }
 
     // run_compiler expects argv including the program name.

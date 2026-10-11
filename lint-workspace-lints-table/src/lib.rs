@@ -5,6 +5,10 @@
 
 #![feature(rustc_private)]
 #![allow(internal_features)]
+// The test harness must link rustc_driver first or the rustc_private
+// rlibs do not resolve; nothing in this crate names it.
+#[cfg(test)]
+#[allow(unused_extern_crates)]
 extern crate rustc_driver;
 extern crate rustc_errors;
 extern crate rustc_lint;
@@ -96,7 +100,7 @@ impl<'tcx> LateLintPass<'tcx> for Pass {
                 WORKSPACE_LINTS_TABLE,
                 None::<rustc_span::Span>,
                 rustc_errors::DiagDecorator(|diag| {
-                    diag.note(format!(
+                    let _ = diag.note(format!(
                         "`{}` defines lints; the workspace-level cargo.toml could conflict \
                          with the actual CI toml, resulting in confusion",
                         manifest.display()
@@ -121,8 +125,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         for (rel, content) in files {
             let p = dir.join(rel);
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(p, content).unwrap();
+            // the paths are literal components of `files` right above:
+            // creation cannot fail for them
+            std::fs::create_dir_all(p.parent().expect("every path has a parent"))
+                .expect("scratch dir creation cannot fail");
+            std::fs::write(p, content).expect("scratch file write cannot fail");
         }
         dir
     }
@@ -156,7 +163,8 @@ mod tests {
                 ("crates/foo/Cargo.toml", "[package]\nname = \"foo\"\n"),
             ],
         );
-        let hit = conflicting_workspace_manifest_from(&member(&dir)).unwrap();
+        let hit = conflicting_workspace_manifest_from(&member(&dir))
+            .expect("the manifest written above defines lints");
         assert_eq!(hit, dir.join("Cargo.toml"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -189,7 +197,8 @@ mod tests {
                 ),
             ],
         );
-        let hit = conflicting_workspace_manifest_from(&dir).unwrap();
+        let hit =
+            conflicting_workspace_manifest_from(&dir).expect("the manifest above defines lints");
         assert_eq!(hit, dir.join("Cargo.toml"));
         let _ = std::fs::remove_dir_all(&dir);
     }

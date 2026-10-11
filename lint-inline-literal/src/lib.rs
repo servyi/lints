@@ -31,11 +31,14 @@
 #![feature(rustc_private)]
 #![allow(internal_features)]
 extern crate rustc_ast;
+// The test harness must link rustc_driver first or the rustc_private
+// rlibs do not resolve; nothing in this crate names it.
+#[cfg(test)]
+#[allow(unused_extern_crates)]
 extern crate rustc_driver;
 extern crate rustc_errors;
 extern crate rustc_hir;
 extern crate rustc_lint;
-extern crate rustc_middle;
 extern crate rustc_span;
 
 use rustc_ast::LitKind;
@@ -282,7 +285,7 @@ fn emit(cx: &LateContext<'_>, span: rustc_span::Span, what: &str) {
         INLINE_LITERAL,
         Some(span),
         DiagDecorator(|diag| {
-            diag.note(format!(
+            let _ = diag.note(format!(
                 "{what} (issue servyi/lints#7): a literal inline in code is a \
                  constant without a name. 1) If the value is a CHOICE (the name \
                  of an environment variable, an initial buffer size, a \
@@ -340,7 +343,7 @@ fn check_value_named_const<'tcx>(
             })
         }
         LitKind::Str(v, _) => {
-            name_is_string_value(ident, &v.as_str()).then(|| {
+            name_is_string_value(ident, v.as_str()).then(|| {
                 format!(
                     "the constant `{ident}` is NAMED as its own value (review on \
                      servyi/lints#16): a name that restates the string carries no \
@@ -358,7 +361,7 @@ fn check_value_named_const<'tcx>(
             INLINE_LITERAL,
             Some(span),
             DiagDecorator(|diag| {
-                diag.note(note);
+                let _ = diag.note(note);
             }),
         );
     }

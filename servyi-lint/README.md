@@ -24,9 +24,10 @@ blocks: the block body may only
 * perform exactly one operation that requires unsafe, whose operands are
   such binding reads.
 
-Everything else — computing arguments, arithmetic, casts, literals in
-operand position, `let` statements — must be hoisted out of the block, and
-the unsafe blocks are then let-chained:
+Everything else — computing arguments, arithmetic, casts, `let`
+statements — must be hoisted out of the block, and the unsafe blocks are
+then let-chained (literals and const/static paths are pure values,
+permitted anywhere a binding read is):
 
 ```rust
 let x = unsafe { 1 + *p };                   // bad: arithmetic inside
@@ -37,7 +38,7 @@ let _ = unsafe { read_at(p, idx) };          // good
 let q = unsafe { buf.add(idx) };
 let v = unsafe { *q };                       // good (let-chain)
 unsafe { *mp = value };                      // good (value side is a read)
-unsafe { *mp = 5 };                          // bad: literal operand
+unsafe { *mp = 5 };                          // good: literals and consts are pure values
 ```
 
 Type-aware: raw-pointer derefs, unsafe fn/method/`FnPtr` calls,

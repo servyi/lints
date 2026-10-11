@@ -90,6 +90,25 @@ jobs:
           RUSTFLAGS="-D unsafe_scope -D custom_parser -D non_test_panic_allow -D unsound_constructor -D workspace_lints_table -W inline_literal" \
           CARGO_TARGET_DIR=target/self-apply \
           cargo +nightly-2026-09-21 check --workspace
+      - name: the collection clippy-checks ITSELF (the action's flag list — consumers get it, so do we)
+        run: >
+          cargo +nightly-2026-09-21 clippy --workspace --all-targets --
+          -D warnings
+          -W rust_2018_idioms
+          -D unused_unsafe
+          -D unsafe_op_in_unsafe_fn
+          -D unused_results
+          -D unused_must_use
+          -D non_ascii_idents
+          -D clippy::all
+          -D clippy::multiple_unsafe_ops_per_block
+          -D clippy::undocumented_unsafe_blocks
+          -D clippy::unwrap_used
+          -D clippy::panic
+          -D clippy::missing_panics_doc
+          -D clippy::dbg_macro
+          -D clippy::todo
+          -D clippy::unimplemented
       - name: unit tests
         run: |
           cargo +nightly-2026-09-21 test -p lint-workspace-lints-table

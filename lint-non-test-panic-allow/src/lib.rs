@@ -72,7 +72,7 @@ impl<'tcx> LateLintPass<'tcx> for Pass {
                 NON_TEST_PANIC_ALLOW,
                 Some(mi.path.span),
                 DiagDecorator(|diag| {
-                    diag.note(format!(
+                    let _ = diag.note(format!(
                         "`{kind}({scoped})` silences the panic policy outside test code: \
                          a panicking test is the failure signal, but production code must \
                          handle or propagate the case instead; gate exemptions with \

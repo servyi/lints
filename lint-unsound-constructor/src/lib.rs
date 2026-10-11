@@ -66,7 +66,7 @@ impl<'tcx> LateLintPass<'tcx> for Pass {
                 UNSOUND_CONSTRUCTOR,
                 Some(item.span),
                 DiagDecorator(|diag| {
-                    diag.note(format!(
+                    let _ = diag.note(format!(
                         "`{}` is #[unsound_constructor]: document the constructor's \
                          safety preconditions in a SAFETY comment right above the \
                          struct (either `///`/`//` line comments or a `/* */` block \
@@ -87,7 +87,7 @@ impl<'tcx> LateLintPass<'tcx> for Pass {
         }
         if let ExprKind::Struct(qpath, _, _) = e.kind
             && let hir::def::Res::Def(hir::def::DefKind::Struct, did) =
-                cx.typeck_results().qpath_res(&qpath, e.hir_id)
+                cx.typeck_results().qpath_res(qpath, e.hir_id)
             && self.unsound_types.contains(&did)
             && !safety_scan::has_safety_comment(cx, e.span)
         {
@@ -95,7 +95,7 @@ impl<'tcx> LateLintPass<'tcx> for Pass {
                 UNSOUND_CONSTRUCTOR,
                 Some(e.span),
                 DiagDecorator(|diag| {
-                    diag.note(format!(
+                    let _ = diag.note(format!(
                         "construction of `{}` is #[unsound_constructor]: argue, for \
                          THIS site, why the constructor's safety preconditions hold — \
                          a SAFETY comment (line `//` or block `/* */` style) either \

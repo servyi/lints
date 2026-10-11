@@ -64,7 +64,7 @@ pub(crate) fn has_safety_comment(cx: &LateContext<'_>, span: rustc_span::Span) -
                                             | rustc_lexer::TokenKind::Bang
                                             | rustc_lexer::TokenKind::Whitespace => {
                                                 let _ = r2;
-                                                iter.next();
+                                                let _ = iter.next();
                                             }
                                             _ => break,
                                         }

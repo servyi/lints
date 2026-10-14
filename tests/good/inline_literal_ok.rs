@@ -6,6 +6,10 @@ const MESSAGE_DONE: &str = "done";
 const CAPACITY_LIMIT: u64 = 4096;
 const FIRST_INDEX_USIZE: usize = 1;
 static COUNTER_RELAXED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+struct Zeroed {
+    count: usize,
+    base: usize,
+}
 
 fn log_line(message: &str) {
     println!("{message}");
@@ -48,6 +52,9 @@ fn main() {
     let defaulted = boundary_hi.then_some(half).map_or(0, |v| v);
     // The whole addition/subtraction method family carries the ±1
     // exception on its first argument (review follow-up on #21).
+    // A struct-literal field initialized to zero is the
+    // zero-initialization idiom (review follow-up).
+    let _ = Zeroed { count: 0, base: 0 };
     let _ = (
         next.checked_add(1),
         next.checked_sub(1),

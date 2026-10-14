@@ -317,20 +317,24 @@ fn span_is_synthetic(cx: &LateContext<'_>, e: &hir::Expr<'_>, kind: &LitKind) ->
     let Ok(snip) = cx.sess().source_map().span_to_snippet(e.span) else {
         return true;
     };
+    let first = snip.chars().next();
     let looks = match kind {
-        // `"..."` or a raw string `r"..."` / `r#"..."#`: after the
-        // `r` and hashes there must be a quote — a bare ident like
-        // `role` (serde's borrowed span) must not pass as `r"..."`.
-        LitKind::Str(..) => snip.starts_with('"') || {
-            let rest = snip.trim_start_matches(['r', '#']);
-            snip.starts_with('r') && rest.starts_with('"')
-        },
-        LitKind::ByteStr(..) => snip.starts_with('b'),
-        LitKind::CStr(..) => snip.starts_with('c'),
-        LitKind::Byte(_) => snip.starts_with("b'"),
-        LitKind::Char(_) => snip.starts_with('\''),
+        // `"..."`, or a raw string `r"..."` / `r#"..."#`: after the
+        // `r` only hashes, then the quote — a bare ident like `role`
+        // (serde's borrowed span) must not pass as a raw string.
+        // Plain char classification: none of the hand-parsing
+        // primitives (self-apply is -D custom_parser).
+        LitKind::Str(..) => {
+            first == Some('"')
+                || (first == Some('r')
+                    && snip.chars().skip(1).find(|c| *c != '#') == Some('"'))
+        }
+        LitKind::ByteStr(..) => first == Some('b'),
+        LitKind::CStr(..) => first == Some('c'),
+        LitKind::Byte(_) => first == Some('b'),
+        LitKind::Char(_) => first == Some('\''),
         LitKind::Int(..) | LitKind::Float(..) => {
-            snip.chars().next().is_some_and(|c| c.is_ascii_digit() || c == '-')
+            first.is_some_and(|c| c.is_ascii_digit() || c == '-')
         }
         LitKind::Bool(_) | LitKind::Err(_) => true,
     };

@@ -524,14 +524,20 @@ fn in_message_position<'tcx>(
                 }
             }
             // (b) a registered message FUNCTION: consumer-declared via
-            // `SERVYI_MESSAGE_MACROS` (review on #16), matched by
-            // callee name (last path segment).
-            if let ExprKind::Call(callee, _) = pe.kind
-                && let ExprKind::Path(qpath) = &callee.kind
-                && let hir::QPath::Resolved(_, path) = qpath
-                && let Some(seg) = path.segments.last()
-                && registered.iter().any(|r| r == seg.ident.as_str())
-            {
+            // `register_message!` (review on #16), matched by callee
+            // name — calls and method calls uniformly (the name is
+            // the last path segment / method segment either way).
+            let callee_name = match pe.kind {
+                ExprKind::Call(callee, _)
+                    if let ExprKind::Path(qpath) = &callee.kind
+                        && let hir::QPath::Resolved(_, path) = qpath =>
+                {
+                    path.segments.last().map(|s| s.ident.as_str())
+                }
+                ExprKind::MethodCall(seg, _, _, _) => Some(seg.ident.as_str()),
+                _ => None,
+            };
+            if callee_name.is_some_and(|name| registered.iter().any(|r| r == name)) {
                 return true;
             }
             // (c) inside a `Result::Err(...)`: the callee must resolve

@@ -39,5 +39,25 @@ fn main() {
     for _ in 0..=CAPACITY_LIMIT {}
     COUNTER_RELAXED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     COUNTER_RELAXED.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    // Boundary comparisons, saturating steps, and defaulted method
+    // args are trivial too (review on servatui#9).
+    let boundary_hi = next > 1;
+    let boundary_lo = half > 0;
+    let boundary_ge = half >= 1;
+    let stepped = next.saturating_sub(1) + 1;
+    let defaulted = boundary_hi.then_some(half).map_or(0, |v| v);
+    // The whole addition/subtraction method family carries the ±1
+    // exception on its first argument (review follow-up on #21).
+    let _ = (
+        next.checked_add(1),
+        next.checked_sub(1),
+        next.wrapping_add(1),
+        next.wrapping_sub(1),
+        next.overflowing_add(1),
+        next.overflowing_sub(1),
+        next.rotate_left(1),
+        next.rotate_right(1),
+    );
+    let _ = (stepped, defaulted);
     std::hint::black_box((buffer, next, half, neg, stop));
 }

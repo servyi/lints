@@ -44,6 +44,7 @@ extern crate rustc_span;
 use rustc_ast::LitKind;
 use rustc_errors::DiagDecorator;
 use rustc_hir as hir;
+use rustc_hir::attrs::lang_items::LangItem;
 use rustc_hir::ExprKind;
 use rustc_lint::{LateContext, LateLintPass, LintContext, declare_lint, impl_lint_pass};
 use rustc_span::hygiene::ExpnKind;
@@ -650,19 +651,15 @@ fn trivial_shape_full<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) ->
                 });
             }
             // `a..=b` desugars to RangeInclusive::new(a, b): the first
-            // argument is the range start.
+            // argument is the range start — recognized by the LANG
+            // ITEM, not by rendered def paths (review on #20).
             ExprKind::Call(callee, args)
                 if args.first().is_some_and(|a| a.hir_id == child_hir_id)
                     && let ExprKind::Path(qpath) = &callee.kind
                     && let hir::def::Res::Def(_, did) =
                         cx.typeck_results().qpath_res(qpath, callee.hir_id)
-                    && matches!(
-                        cx.tcx.def_path_str(did).as_str(),
-                        "core::ops::RangeInclusive::new"
-                            | "std::ops::RangeInclusive::new"
-                            | "core::ops::RangeInclusive::<Idx>::new"
-                            | "std::ops::RangeInclusive::<Idx>::new"
-                    ) =>
+                    && cx.tcx.lang_items().get(LangItem::RangeInclusiveNew)
+                        == Some(did) =>
             {
                 return Some(Shape::RangeStart);
             }
@@ -686,18 +683,17 @@ fn trivial_shape_full<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) ->
             // `0..n` / `1..n` / `0..`: the range START is iteration
             // idiom, not a magic constant. Desugars to a
             // Range/RangeFrom struct literal whose `start` field holds
-            // the literal.
+            // the literal — recognized by the LANG ITEMS, not by
+            // rendered def paths (review on #20).
             ExprKind::Struct(qpath, fields, _)
                 if let hir::def::Res::Def(hir::def::DefKind::Struct, did) =
                     cx.typeck_results().qpath_res(qpath, pe.hir_id)
-                    && matches!(
-                        cx.tcx.def_path_str(did).as_str(),
-                        "core::ops::Range" | "std::ops::Range"
-                            | "core::ops::RangeFrom" | "std::ops::RangeFrom"
-                    )
-                    && fields
+                    && [LangItem::Range, LangItem::RangeFrom]
                         .iter()
-                        .any(|f| f.hir_id == child_hir_id && f.ident.as_str() == "start") =>
+                        .any(|item| cx.tcx.lang_items().get(*item) == Some(did))
+                    && fields.iter().any(|f| {
+                        f.hir_id == child_hir_id && f.ident.name == rustc_span::sym::start
+                    }) =>
             {
                 return Some(Shape::RangeStart);
             }

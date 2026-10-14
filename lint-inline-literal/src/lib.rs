@@ -589,6 +589,7 @@ fn trivial_int<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>, value: u1
         Some(Shape::MulDiv) => value == 2,
         Some(Shape::CallArg) => value == 0,
         Some(Shape::RangeStart) | Some(Shape::Comparison) => value == 0 || value == 1,
+        Some(Shape::StructFieldZero) => value == 0,
         None => false,
     }
 }
@@ -611,6 +612,9 @@ enum Shape {
     /// (`x > 0`, `n >= 1`): boundary checks, not magic constants
     /// (review on servatui#9).
     Comparison,
+    /// A struct-literal FIELD initialized to zero (`pos: 0`):
+    /// zeroing a field is initialization, not a magic constant.
+    StructFieldZero,
     /// The `from` operand of a range (`0..n`, `1..=k`): starting at
     /// zero or one is the universal iteration idiom, not a constant
     /// with semantics (review on states#7).
@@ -626,6 +630,8 @@ fn trivial_shape_full<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) ->
     loop {
         let (parent_id, node) = cx.tcx.hir_parent_iter(cur).next()?;
         if let hir::Node::ExprField(_) = node {
+            // The struct-literal FIELD wrapper is transparent; the
+            // enclosing struct decides (Range start, zeroed field...).
             cur = parent_id;
             continue;
         }
@@ -726,6 +732,14 @@ fn trivial_shape_full<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) ->
                     }) =>
             {
                 return Some(Shape::RangeStart);
+            }
+            // Any OTHER struct-literal field initialized to the
+            // literal is zero-initialization (`pos: 0`), not a magic
+            // constant (value rule: zero only).
+            ExprKind::Struct(_, fields, _)
+                if fields.iter().any(|f| f.hir_id == child_hir_id) =>
+            {
+                return Some(Shape::StructFieldZero);
             }
             _ => return None,
         }

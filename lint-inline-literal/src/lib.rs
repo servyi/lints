@@ -127,6 +127,7 @@ const MESSAGE_MACROS: &[&str] = &[
     "print", "println", "eprint", "eprintln",
     "format", "write", "writeln",
     "info", "debug", "trace", "warn", "error",
+    "anyhow", "bail", "ensure",
 ];
 
 /// True when `ident` consists only of number words (`ZERO`,
@@ -231,6 +232,14 @@ impl<'tcx> LateLintPass<'tcx> for Pass {
         if !servyi_lint_core::is_active(cx, INLINE_LITERAL) {
             return;
         }
+        // Generated code is not the consumer's to edit: skip literals
+        // inside a foreign macro expansion (derive output, external
+        // macros) and literals whose span is synthetic (serde's
+        // serialize_struct("X", ..) borrows the struct ident's span,
+        // so the finding would underline the NAME, not any literal).
+        if in_foreign_expansion(e.span) || span_is_synthetic(cx, e, &lit.node) {
+            return;
+        }
         match lit.node {
             LitKind::Bool(_) => {}
             LitKind::Str(..) | LitKind::ByteStr(..) | LitKind::CStr(..) => {
@@ -278,6 +287,58 @@ impl<'tcx> LateLintPass<'tcx> for Pass {
             LitKind::Err(_) => {}
         }
     }
+}
+
+/// True when `span` sits inside a macro expansion authored by ANOTHER
+/// crate (a derive's generated code, an external macro's output):
+/// those literals cannot be named here — they are the macro author's,
+/// not the consumer's. Local macros stay flagged: you can edit your
+/// own macro.
+fn in_foreign_expansion(span: rustc_span::Span) -> bool {
+    for expn in span.macro_backtrace() {
+        if let Some(def) = expn.macro_def_id
+            && def.krate != rustc_span::def_id::LOCAL_CRATE
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// True when `e`'s span is SYNTHETIC — not covering the literal's own
+/// source text. Derive-generated literals routinely borrow an ident's
+/// span (serde's `serialize_struct("CommandRequest", ..)` underlines
+/// the struct NAME); a literal the user wrote always has a span over
+/// its own token, so anything else is generated code the user cannot
+/// edit.
+fn span_is_synthetic(cx: &LateContext<'_>, e: &hir::Expr<'_>, kind: &LitKind) -> bool {
+    // An unsnippetable span is not the literal's own source text by
+    // definition — generated code (some derive output shapes).
+    let Ok(snip) = cx.sess().source_map().span_to_snippet(e.span) else {
+        return true;
+    };
+    let first = snip.chars().next();
+    let looks = match kind {
+        // `"..."`, or a raw string `r"..."` / `r#"..."#`: after the
+        // `r` only hashes, then the quote — a bare ident like `role`
+        // (serde's borrowed span) must not pass as a raw string.
+        // Plain char classification: none of the hand-parsing
+        // primitives (self-apply is -D custom_parser).
+        LitKind::Str(..) => {
+            first == Some('"')
+                || (first == Some('r')
+                    && snip.chars().skip(1).find(|c| *c != '#') == Some('"'))
+        }
+        LitKind::ByteStr(..) => first == Some('b'),
+        LitKind::CStr(..) => first == Some('c'),
+        LitKind::Byte(_) => first == Some('b'),
+        LitKind::Char(_) => first == Some('\''),
+        LitKind::Int(..) | LitKind::Float(..) => {
+            first.is_some_and(|c| c.is_ascii_digit() || c == '-')
+        }
+        LitKind::Bool(_) | LitKind::Err(_) => true,
+    };
+    !looks
 }
 
 fn emit(cx: &LateContext<'_>, span: rustc_span::Span, what: &str) {
@@ -431,6 +492,16 @@ fn in_message_position<'tcx>(
     registered: &[String],
 ) -> bool {
     let debug = std::env::var_os("INLINE_LITERAL_DEBUG").is_some();
+    // (b) `.expect("...")` — the message is panic-family prose (like
+    // `panic!`/`assert!`), carried as a DIRECT method argument.
+    if let Some((_, node)) = cx.tcx.hir_parent_iter(e.hir_id).next()
+        && let hir::Node::Expr(pe) = node
+        && let ExprKind::MethodCall(seg, _, margs, _) = pe.kind
+        && matches!(seg.ident.as_str(), "expect" | "expect_err")
+        && margs.iter().any(|a| a.hir_id == e.hir_id)
+    {
+        return true;
+    }
     // (a) inside a message macro. The literal's own hygiene is root
     // (format-args capture keeps the original span), so the check
     // walks the ANCESTORS' expansion chains: some ancestor of the
@@ -453,14 +524,20 @@ fn in_message_position<'tcx>(
                 }
             }
             // (b) a registered message FUNCTION: consumer-declared via
-            // `SERVYI_MESSAGE_MACROS` (review on #16), matched by
-            // callee name (last path segment).
-            if let ExprKind::Call(callee, _) = pe.kind
-                && let ExprKind::Path(qpath) = &callee.kind
-                && let hir::QPath::Resolved(_, path) = qpath
-                && let Some(seg) = path.segments.last()
-                && registered.iter().any(|r| r == seg.ident.as_str())
-            {
+            // `register_message!` (review on #16), matched by callee
+            // name — calls and method calls uniformly (the name is
+            // the last path segment / method segment either way).
+            let callee_name = match pe.kind {
+                ExprKind::Call(callee, _)
+                    if let ExprKind::Path(qpath) = &callee.kind
+                        && let hir::QPath::Resolved(_, path) = qpath =>
+                {
+                    path.segments.last().map(|s| s.ident.as_str())
+                }
+                ExprKind::MethodCall(seg, _, _, _) => Some(seg.ident.as_str()),
+                _ => None,
+            };
+            if callee_name.is_some_and(|name| registered.iter().any(|r| r == name)) {
                 return true;
             }
             // (c) inside a `Result::Err(...)`: the callee must resolve

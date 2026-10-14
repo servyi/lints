@@ -12,6 +12,7 @@ macro_rules! register_message {
 
 register_message!(log_error);
 register_message!(fail);
+register_message!(status);
 
 macro_rules! log_error {
     ($m:expr) => { eprintln!("error: {}", $m) };
@@ -21,8 +22,18 @@ fn fail(message: &str) {
     eprintln!("{message}");
 }
 
+/// Method-call message positions register the same way: the callee
+/// name is the method segment (review on #19: uniform handling).
+struct Report;
+impl Report {
+    fn status(&self, message: &str) {
+        eprintln!("{message}");
+    }
+}
+
 fn main() {
     log_error!(SPUN_DOWN);
     log_error!("motor stalled");
     fail("hardware fault");
+    Report.status("fan degraded");
 }

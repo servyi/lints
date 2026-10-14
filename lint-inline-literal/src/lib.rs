@@ -588,7 +588,7 @@ fn trivial_int<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>, value: u1
         Some(Shape::AddSub) => value == 1,
         Some(Shape::MulDiv) => value == 2,
         Some(Shape::CallArg) => value == 0,
-        Some(Shape::RangeStart) => value == 0 || value == 1,
+        Some(Shape::RangeStart) | Some(Shape::Comparison) => value == 0 || value == 1,
         None => false,
     }
 }
@@ -598,7 +598,7 @@ fn trivial_float<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>, value: 
     match trivial_shape_full(cx, e) {
         Some(Shape::AddSub) => value == 1.0,
         Some(Shape::MulDiv) => value == 2.0,
-        Some(Shape::RangeStart) => value == 0.0 || value == 1.0,
+        Some(Shape::RangeStart) | Some(Shape::Comparison) => value == 0.0 || value == 1.0,
         _ => false,
     }
 }
@@ -607,6 +607,10 @@ enum Shape {
     AddSub,
     MulDiv,
     CallArg,
+    /// One side of a comparison against the trivial bounds 0/1
+    /// (`x > 0`, `n >= 1`): boundary checks, not magic constants
+    /// (review on servatui#9).
+    Comparison,
     /// The `from` operand of a range (`0..n`, `1..=k`): starting at
     /// zero or one is the universal iteration idiom, not a constant
     /// with semantics (review on states#7).
@@ -640,6 +644,12 @@ fn trivial_shape_full<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) ->
                 return Some(match op.node {
                     hir::BinOpKind::Add | hir::BinOpKind::Sub => Shape::AddSub,
                     hir::BinOpKind::Mul | hir::BinOpKind::Div => Shape::MulDiv,
+                    hir::BinOpKind::Eq
+                    | hir::BinOpKind::Ne
+                    | hir::BinOpKind::Lt
+                    | hir::BinOpKind::Le
+                    | hir::BinOpKind::Gt
+                    | hir::BinOpKind::Ge => Shape::Comparison,
                     _ => return None,
                 });
             }
@@ -669,9 +679,29 @@ fn trivial_shape_full<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) ->
             // fetch_add(1)/fetch_sub(1) are `+= 1`/`-= 1` in atomic
             // form — the plus/minus exception applies (review on
             // states#7).
+            // The whole addition/subtraction METHOD family:
+            // fetch_add/fetch_sub (atomics), checked_/wrapping_/
+            // saturating_/overflowing_ add/sub, rotate_left/right are
+            // ±N shifts, rem_euclid is modulus — all are += / -= in
+            // method form, so the plus/minus exception applies
+            // (reviews on states#7, servatui#9).
             ExprKind::MethodCall(seg, _recv, args, _)
-                if matches!(seg.ident.as_str(), "fetch_add" | "fetch_sub")
-                    && args.first().is_some_and(|a| a.hir_id == child_hir_id) =>
+                if matches!(
+                    seg.ident.as_str(),
+                    "fetch_add"
+                        | "fetch_sub"
+                        | "checked_add"
+                        | "checked_sub"
+                        | "wrapping_add"
+                        | "wrapping_sub"
+                        | "saturating_add"
+                        | "saturating_sub"
+                        | "overflowing_add"
+                        | "overflowing_sub"
+                        | "rotate_left"
+                        | "rotate_right"
+                        | "rem_euclid"
+                ) && args.first().is_some_and(|a| a.hir_id == child_hir_id) =>
             {
                 return Some(Shape::AddSub);
             }

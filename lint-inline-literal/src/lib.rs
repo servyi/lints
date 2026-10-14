@@ -492,11 +492,20 @@ fn in_message_position<'tcx>(
     registered: &[String],
 ) -> bool {
     let debug = std::env::var_os("INLINE_LITERAL_DEBUG").is_some();
+    // (b) `.expect("...")` — the message is panic-family prose (like
+    // `panic!`/`assert!`), carried as a DIRECT method argument.
+    if let Some((_, node)) = cx.tcx.hir_parent_iter(e.hir_id).next()
+        && let hir::Node::Expr(pe) = node
+        && let ExprKind::MethodCall(seg, _, margs, _) = pe.kind
+        && matches!(seg.ident.as_str(), "expect" | "expect_err")
+        && margs.iter().any(|a| a.hir_id == e.hir_id)
+    {
+        return true;
+    }
     // (a) inside a message macro. The literal's own hygiene is root
     // (format-args capture keeps the original span), so the check
     // walks the ANCESTORS' expansion chains: some ancestor of the
     // literal is the expansion root carrying the macro's context.
-    let mut child_hir_id = e.hir_id;
     for (_id, node) in cx.tcx.hir_parent_iter(e.hir_id) {
         if let hir::Node::Expr(pe) = node {
             for expn in pe.span.macro_backtrace() {
@@ -514,16 +523,7 @@ fn in_message_position<'tcx>(
                     }
                 }
             }
-            // (b) `.expect("...")` — the message is panic-family
-            // prose (like `panic!`/`assert!`), carried as a method
-            // argument.
-            if let ExprKind::MethodCall(seg, _, margs, _) = pe.kind
-                && matches!(seg.ident.as_str(), "expect" | "expect_err")
-                && margs.iter().any(|a| a.hir_id == child_hir_id)
-            {
-                return true;
-            }
-            // (c) a registered message FUNCTION: consumer-declared via
+            // (b) a registered message FUNCTION: consumer-declared via
             // `SERVYI_MESSAGE_MACROS` (review on #16), matched by
             // callee name (last path segment).
             if let ExprKind::Call(callee, _) = pe.kind
@@ -534,7 +534,7 @@ fn in_message_position<'tcx>(
             {
                 return true;
             }
-            // (d) inside a `Result::Err(...)`: the callee must resolve
+            // (c) inside a `Result::Err(...)`: the callee must resolve
             // to THE Err variant constructor of core's Result — user
             // enums with their own `Err` variant do not count.
             if let ExprKind::Call(callee, _) = pe.kind

@@ -4,6 +4,8 @@ const FIELD_SEP: &str = ",";
 const FIRST_INDEX: usize = 0;
 const MESSAGE_DONE: &str = "done";
 const CAPACITY_LIMIT: u64 = 4096;
+const FIRST_INDEX_USIZE: usize = 1;
+static COUNTER_RELAXED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn log_line(message: &str) {
     println!("{message}");
@@ -29,5 +31,13 @@ fn main() {
     let neg: i8 = -1;
     seek(0);
     let stop = outcome.is_err();
+    // Range starts 0/1 are iteration idiom, fetch_add/fetch_sub carry
+    // the +/-1 exception (review on states#7).
+    let first_half: Vec<u32> = (0..buffer.len() as u32).take(FIRST_INDEX_USIZE).collect();
+    let _ = first_half;
+    for _ in 1..CAPACITY_LIMIT {}
+    for _ in 0..=CAPACITY_LIMIT {}
+    COUNTER_RELAXED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    COUNTER_RELAXED.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     std::hint::black_box((buffer, next, half, neg, stop));
 }

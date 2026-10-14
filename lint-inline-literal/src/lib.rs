@@ -44,6 +44,7 @@ extern crate rustc_span;
 use rustc_ast::LitKind;
 use rustc_errors::DiagDecorator;
 use rustc_hir as hir;
+use rustc_hir::attrs::lang_items::LangItem;
 use rustc_hir::ExprKind;
 use rustc_lint::{LateContext, LateLintPass, LintContext, declare_lint, impl_lint_pass};
 use rustc_span::hygiene::ExpnKind;
@@ -582,20 +583,22 @@ fn in_message_position<'tcx>(
 /// (stepping), `2` under `*`/`/` (doubling), `0` as an argument of a
 /// call. Casts on the literal's side are transparent
 /// (`foo(x, 0 as *const u8)`).
-fn trivial_int<'tcx>(cx: &LateContext<'tcx>, e: &hir::Expr<'tcx>, value: u128) -> bool {
+fn trivial_int<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>, value: u128) -> bool {
     match trivial_shape_full(cx, e) {
         Some(Shape::AddSub) => value == 1,
         Some(Shape::MulDiv) => value == 2,
         Some(Shape::CallArg) => value == 0,
+        Some(Shape::RangeStart) => value == 0 || value == 1,
         None => false,
     }
 }
 
 /// The same exceptions for floats, by value (`1.0`, `2.0`).
-fn trivial_float<'tcx>(cx: &LateContext<'tcx>, e: &hir::Expr<'tcx>, value: f64) -> bool {
+fn trivial_float<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>, value: f64) -> bool {
     match trivial_shape_full(cx, e) {
         Some(Shape::AddSub) => value == 1.0,
         Some(Shape::MulDiv) => value == 2.0,
+        Some(Shape::RangeStart) => value == 0.0 || value == 1.0,
         _ => false,
     }
 }
@@ -604,23 +607,35 @@ enum Shape {
     AddSub,
     MulDiv,
     CallArg,
+    /// The `from` operand of a range (`0..n`, `1..=k`): starting at
+    /// zero or one is the universal iteration idiom, not a constant
+    /// with semantics (review on states#7).
+    RangeStart,
 }
 
 /// Walk up through casts; classify the first enclosing operator.
-fn trivial_shape_full<'tcx>(cx: &LateContext<'tcx>, e: &hir::Expr<'tcx>) -> Option<Shape> {
-    let mut child = e;
+fn trivial_shape_full<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) -> Option<Shape> {
+    // Walk parent HIR ids (a struct-literal FIELD wrapper — e.g. the
+    // `start:` of a desugared Range — is transparent), then classify
+    // the first enclosing expression.
+    let mut cur = e.hir_id;
     loop {
-        let (_id, node) = cx.tcx.hir_parent_iter(child.hir_id).next()?;
+        let (parent_id, node) = cx.tcx.hir_parent_iter(cur).next()?;
+        if let hir::Node::ExprField(_) = node {
+            cur = parent_id;
+            continue;
+        }
         let hir::Node::Expr(pe) = node else { return None };
+        let child_hir_id = cur;
         match pe.kind {
-            ExprKind::Cast(inner, _) if inner.hir_id == child.hir_id => {
-                child = pe;
+            ExprKind::Cast(inner, _) if inner.hir_id == child_hir_id => {
+                cur = pe.hir_id;
             }
-            ExprKind::Unary(hir::UnOp::Neg, inner) if inner.hir_id == child.hir_id => {
+            ExprKind::Unary(hir::UnOp::Neg, inner) if inner.hir_id == child_hir_id => {
                 return Some(Shape::AddSub); // -1 / -1.0
             }
             ExprKind::Binary(op, l, r)
-                if l.hir_id == child.hir_id || r.hir_id == child.hir_id =>
+                if l.hir_id == child_hir_id || r.hir_id == child_hir_id =>
             {
                 return Some(match op.node {
                     hir::BinOpKind::Add | hir::BinOpKind::Sub => Shape::AddSub,
@@ -628,20 +643,59 @@ fn trivial_shape_full<'tcx>(cx: &LateContext<'tcx>, e: &hir::Expr<'tcx>) -> Opti
                     _ => return None,
                 });
             }
-            ExprKind::AssignOp(op, _lhs, rhs) if rhs.hir_id == child.hir_id => {
+            ExprKind::AssignOp(op, _lhs, rhs) if rhs.hir_id == child_hir_id => {
                 return Some(match op.node {
                     hir::AssignOpKind::AddAssign | hir::AssignOpKind::SubAssign => Shape::AddSub,
                     hir::AssignOpKind::MulAssign | hir::AssignOpKind::DivAssign => Shape::MulDiv,
                     _ => return None,
                 });
             }
+            // `a..=b` desugars to RangeInclusive::new(a, b): the first
+            // argument is the range start — recognized by the LANG
+            // ITEM, not by rendered def paths (review on #20).
+            ExprKind::Call(callee, args)
+                if args.first().is_some_and(|a| a.hir_id == child_hir_id)
+                    && let ExprKind::Path(qpath) = &callee.kind
+                    && let hir::def::Res::Def(_, did) =
+                        cx.typeck_results().qpath_res(qpath, callee.hir_id)
+                    && cx.tcx.lang_items().get(LangItem::RangeInclusiveNew)
+                        == Some(did) =>
+            {
+                return Some(Shape::RangeStart);
+            }
             ExprKind::Call(_, args) => {
-                return (args.iter().any(|a| a.hir_id == child.hir_id)).then_some(Shape::CallArg);
+                return (args.iter().any(|a| a.hir_id == child_hir_id)).then_some(Shape::CallArg);
+            }
+            // fetch_add(1)/fetch_sub(1) are `+= 1`/`-= 1` in atomic
+            // form — the plus/minus exception applies (review on
+            // states#7).
+            ExprKind::MethodCall(seg, _recv, args, _)
+                if matches!(seg.ident.as_str(), "fetch_add" | "fetch_sub")
+                    && args.first().is_some_and(|a| a.hir_id == child_hir_id) =>
+            {
+                return Some(Shape::AddSub);
             }
             ExprKind::MethodCall(_, recv, args, _) => {
-                return (recv.hir_id == child.hir_id
-                    || args.iter().any(|a| a.hir_id == child.hir_id))
+                return (recv.hir_id == child_hir_id
+                    || args.iter().any(|a| a.hir_id == child_hir_id))
                     .then_some(Shape::CallArg);
+            }
+            // `0..n` / `1..n` / `0..`: the range START is iteration
+            // idiom, not a magic constant. Desugars to a
+            // Range/RangeFrom struct literal whose `start` field holds
+            // the literal — recognized by the LANG ITEMS, not by
+            // rendered def paths (review on #20).
+            ExprKind::Struct(qpath, fields, _)
+                if let hir::def::Res::Def(hir::def::DefKind::Struct, did) =
+                    cx.typeck_results().qpath_res(qpath, pe.hir_id)
+                    && [LangItem::Range, LangItem::RangeFrom]
+                        .iter()
+                        .any(|item| cx.tcx.lang_items().get(*item) == Some(did))
+                    && fields.iter().any(|f| {
+                        f.hir_id == child_hir_id && f.ident.name == rustc_span::sym::start
+                    }) =>
+            {
+                return Some(Shape::RangeStart);
             }
             _ => return None,
         }

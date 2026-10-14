@@ -127,6 +127,7 @@ const MESSAGE_MACROS: &[&str] = &[
     "print", "println", "eprint", "eprintln",
     "format", "write", "writeln",
     "info", "debug", "trace", "warn", "error",
+    "anyhow", "bail", "ensure",
 ];
 
 /// True when `ident` consists only of number words (`ZERO`,
@@ -311,11 +312,19 @@ fn in_foreign_expansion(span: rustc_span::Span) -> bool {
 /// its own token, so anything else is generated code the user cannot
 /// edit.
 fn span_is_synthetic(cx: &LateContext<'_>, e: &hir::Expr<'_>, kind: &LitKind) -> bool {
+    // An unsnippetable span is not the literal's own source text by
+    // definition — generated code (some derive output shapes).
     let Ok(snip) = cx.sess().source_map().span_to_snippet(e.span) else {
-        return false;
+        return true;
     };
     let looks = match kind {
-        LitKind::Str(..) => snip.starts_with('"') || snip.starts_with('r'),
+        // `"..."` or a raw string `r"..."` / `r#"..."#`: after the
+        // `r` and hashes there must be a quote — a bare ident like
+        // `role` (serde's borrowed span) must not pass as `r"..."`.
+        LitKind::Str(..) => snip.starts_with('"') || {
+            let rest = snip.trim_start_matches(['r', '#']);
+            snip.starts_with('r') && rest.starts_with('"')
+        },
         LitKind::ByteStr(..) => snip.starts_with('b'),
         LitKind::CStr(..) => snip.starts_with('c'),
         LitKind::Byte(_) => snip.starts_with("b'"),
@@ -483,6 +492,7 @@ fn in_message_position<'tcx>(
     // (format-args capture keeps the original span), so the check
     // walks the ANCESTORS' expansion chains: some ancestor of the
     // literal is the expansion root carrying the macro's context.
+    let mut child_hir_id = e.hir_id;
     for (_id, node) in cx.tcx.hir_parent_iter(e.hir_id) {
         if let hir::Node::Expr(pe) = node {
             for expn in pe.span.macro_backtrace() {
@@ -500,7 +510,16 @@ fn in_message_position<'tcx>(
                     }
                 }
             }
-            // (b) a registered message FUNCTION: consumer-declared via
+            // (b) `.expect("...")` — the message is panic-family
+            // prose (like `panic!`/`assert!`), carried as a method
+            // argument.
+            if let ExprKind::MethodCall(seg, _, margs, _) = pe.kind
+                && matches!(seg.ident.as_str(), "expect" | "expect_err")
+                && margs.iter().any(|a| a.hir_id == child_hir_id)
+            {
+                return true;
+            }
+            // (c) a registered message FUNCTION: consumer-declared via
             // `SERVYI_MESSAGE_MACROS` (review on #16), matched by
             // callee name (last path segment).
             if let ExprKind::Call(callee, _) = pe.kind
@@ -511,7 +530,7 @@ fn in_message_position<'tcx>(
             {
                 return true;
             }
-            // (c) inside a `Result::Err(...)`: the callee must resolve
+            // (d) inside a `Result::Err(...)`: the callee must resolve
             // to THE Err variant constructor of core's Result — user
             // enums with their own `Err` variant do not count.
             if let ExprKind::Call(callee, _) = pe.kind

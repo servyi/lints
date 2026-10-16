@@ -590,6 +590,7 @@ fn trivial_int<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>, value: u1
         Some(Shape::CallArg) => value == 0,
         Some(Shape::RangeStart) | Some(Shape::Comparison) => value == 0 || value == 1,
         Some(Shape::StructFieldZero) => value == 0,
+        Some(Shape::LetInit) => value == 0 || value == 1,
         None => false,
     }
 }
@@ -600,6 +601,7 @@ fn trivial_float<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>, value: 
         Some(Shape::AddSub) => value == 1.0,
         Some(Shape::MulDiv) => value == 2.0,
         Some(Shape::RangeStart) | Some(Shape::Comparison) => value == 0.0 || value == 1.0,
+        Some(Shape::LetInit) => value == 0.0 || value == 1.0,
         _ => false,
     }
 }
@@ -619,6 +621,12 @@ enum Shape {
     /// zero or one is the universal iteration idiom, not a constant
     /// with semantics (review on states#7).
     RangeStart,
+    /// The initializer of a `let` binding (`let n = 0;`,
+    /// `let mut it = 1`): initializing a counter/accumulator at
+    /// zero or one is initialization, not a magic constant; the
+    /// empty string carries no value to name (review on
+    /// agent-scripts#115).
+    LetInit,
 }
 
 /// Walk up through casts; classify the first enclosing operator.
@@ -629,6 +637,14 @@ fn trivial_shape_full<'tcx>(cx: &LateContext<'tcx>, e: &'tcx hir::Expr<'tcx>) ->
     let mut cur = e.hir_id;
     loop {
         let (parent_id, node) = cx.tcx.hir_parent_iter(cur).next()?;
+        // The INIT of a let binding (`let n = 0;`): the Local node
+        // owns it — initialization at zero/one is the idiom.
+        if let hir::Node::LetStmt(local) = node
+            && let Some(init) = local.init
+            && init.hir_id == cur
+        {
+            return Some(Shape::LetInit);
+        }
         if let hir::Node::ExprField(_) = node {
             // The struct-literal FIELD wrapper is transparent; the
             // enclosing struct decides (Range start, zeroed field...).

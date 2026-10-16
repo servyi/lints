@@ -55,6 +55,17 @@ fn main() {
     // A struct-literal field initialized to zero is the
     // zero-initialization idiom (review follow-up).
     let _ = Zeroed { count: 0, base: 0 };
+    // A let binding initialized to 0, 1, 0.0, 1.0 or "" is
+    // initialization, not a magic constant (review on
+    // agent-scripts#115).
+    let mut attempts = 0;
+    let mut index = 1;
+    let mut ratio = 0.0;
+    let mut scale = 1.0;
+    let mut label = "";
+    let mut suffix = "".to_string();
+    let typed_zero: u64 = 0;
+    let typed_one: usize = 1;
     let _ = (
         next.checked_add(1),
         next.checked_sub(1),
@@ -66,5 +77,5 @@ fn main() {
         next.rotate_right(1),
     );
     let _ = (stepped, defaulted);
-    std::hint::black_box((buffer, next, half, neg, stop));
+    std::hint::black_box((buffer, next, half, neg, stop, attempts, index, ratio, scale, label, suffix, typed_zero, typed_one));
 }

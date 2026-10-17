@@ -65,7 +65,9 @@ jobs:
           fail=0
           for f in tests/bad/inline_literal/*.rs; do
             ./target/debug/servyi-lint \
-              "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D inline_literal >/dev/null 2>&1
+              "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out \
+              --extern fixture_derive=$PWD/target/debug/libfixture_derive.so \
+              -D inline_literal >/dev/null 2>&1
             rc=$?
             if [ "$rc" -eq 0 ]; then echo "FAIL: $f was not caught"; fail=1; fi
           done
@@ -131,6 +133,7 @@ jobs:
           for f in tests/bad/clippy/*.rs; do
             clippy-driver "$f" --crate-type bin --edition 2021 \
               -D clippy::multiple_unsafe_ops_per_block -D unused_unsafe \
+              --extern fixture_derive=$PWD/target/debug/libfixture_derive.so \
               --out-dir target/clippy-fixture-out >/dev/null 2>&1
             rc=$?
             if [ $rc -eq 0 ]; then echo "FAIL: $f was not caught by clippy list"; fail=1; fi
@@ -144,7 +147,9 @@ jobs:
           fail=0
           for f in tests/good/*.rs; do
             ./target/debug/servyi-lint \
-              "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out -D unsafe_scope -D custom_parser -D non_test_panic_allow -D unsound_constructor -D inline_literal >/dev/null 2>&1
+              "$f" --crate-type bin --edition 2021 --out-dir target/fixture-out \
+              --extern fixture_derive=$PWD/target/debug/libfixture_derive.so \
+              -D unsafe_scope -D custom_parser -D non_test_panic_allow -D unsound_constructor -D inline_literal >/dev/null 2>&1
             rc=$?
             if [ "$rc" -ne 0 ]; then
               echo "FAIL: $f produced a false positive in the driver"

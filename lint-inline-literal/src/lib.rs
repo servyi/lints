@@ -8,8 +8,16 @@
 //! Sanctioned inline positions:
 //!
 //! * message strings: string literals inside `Err(...)`, `assert!`,
-//!   `println!`, the log macros, ... — failure/report prose is not a
-//!   reusable constant;
+//!   `println!`, the log macros, ... — and the message argument of the
+//!   anyhow-style context pair `.context("...")` /
+//!   `.with_context(|| "...")`, like `.expect("...")` — failure/report
+//!   prose is not a reusable constant;
+//! * attribute-carried literals: tokens inside an attribute's token
+//!   tree (`#[command(name = "set")]`, `#[arg(num_args = 0..)]`,
+//!   `#[deprecated(since = "1.0")]`) are declaration data — the
+//!   attribute KEY names the value, and a derive may re-emit them into
+//!   generated code with the attribute token's span, where the
+//!   consumer cannot name them;
 //! * the trivial numerics: `+1`/`-1` (stepping), `*2`/`/2` (doubling),
 //!   and a `0` argument of a call (zero-initialization arguments);
 //! * `bool` literals — `true`/`false` spell their own semantics.
@@ -67,7 +75,9 @@ declare_lint! {
 
 pub fn register(store: &mut rustc_lint::LintStore) {
     store.register_lints(&[INLINE_LITERAL]);
-    store.register_late_lint_pass(Box::new(|_| Box::new(Pass { registered: Vec::new() })));
+    store.register_late_lint_pass(Box::new(|_| {
+        Box::new(Pass { registered: Vec::new(), attr_ranges: Vec::new() })
+    }));
 }
 
 pub struct Pass {
@@ -75,6 +85,11 @@ pub struct Pass {
     /// markers, collected once in `check_crate` (before any body is
     /// checked, so registration order in the file never matters).
     registered: Vec<String>,
+    /// Source ranges of every attribute in the crate, collected once
+    /// in `check_crate`: a literal whose span sits inside one is
+    /// attribute-carried declaration data (the attribute KEY names
+    /// the value), not code to name.
+    attr_ranges: Vec<(rustc_span::BytePos, rustc_span::BytePos)>,
 }
 
 impl_lint_pass!(Pass => [INLINE_LITERAL]);
@@ -115,6 +130,88 @@ impl<'a, 'tcx> MarkerCollector<'a, 'tcx> {
         };
         if tag.as_str() == MESSAGE_MARKER_TAG && !name.as_str().is_empty() {
             self.out.push(name.as_str().to_string());
+        }
+    }
+}
+
+/// Walks the crate collecting the source range of every attribute
+/// (items and their members — impl/trait/foreign items, struct fields,
+/// enum variants): a literal re-emitted by a derive carries the
+/// attribute token's span, so containment against these ranges
+/// identifies attribute-carried literals wherever the generated code
+/// lives.
+struct AttrRangeCollector<'a, 'tcx> {
+    cx: &'a LateContext<'tcx>,
+    out: &'a mut Vec<(rustc_span::BytePos, rustc_span::BytePos)>,
+}
+
+impl<'a, 'tcx> AttrRangeCollector<'a, 'tcx> {
+    fn record(&mut self, hir_id: hir::HirId) {
+        if std::env::var_os("INLINE_LITERAL_DEBUG").is_some() {
+            eprintln!("inline_literal: attrs of {hir_id:?}");
+        }
+        for attr in self.cx.tcx.hir_attrs(hir_id) {
+            // Only attributes with a real source span: user-written
+            // ones (Unparsed — derive helpers, tool attrs) and doc
+            // comments; other compiler-parsed kinds can carry merged
+            // or injected spans and PANIC on `span()` (e.g. the
+            // injected prelude import).
+            let span = if let Some(doc) = attr.is_doc_comment() {
+                doc
+            } else if !attr.is_parsed_attr() {
+                attr.span()
+            } else {
+                continue;
+            };
+            let data = span.data();
+            if std::env::var_os("INLINE_LITERAL_DEBUG").is_some() {
+                eprintln!("inline_literal: attr range {:?}..{:?}", data.lo, data.hi);
+            }
+            self.out.push((data.lo, data.hi));
+        }
+    }
+
+    fn collect_item(&mut self, item: &'tcx hir::Item<'tcx>) {
+        self.record(item.hir_id());
+        match &item.kind {
+            hir::ItemKind::Mod(_, m) => {
+                for id in m.item_ids {
+                    self.collect_item(self.cx.tcx.hir_item(*id));
+                }
+            }
+            hir::ItemKind::ForeignMod { items, .. } => {
+                for id in *items {
+                    self.record(self.cx.tcx.hir_foreign_item(*id).hir_id());
+                }
+            }
+            hir::ItemKind::Enum(_, _, def) => {
+                for variant in def.variants {
+                    self.record(variant.hir_id);
+                    self.collect_fields(&variant.data);
+                }
+            }
+            hir::ItemKind::Struct(_, _, data) | hir::ItemKind::Union(_, _, data) => {
+                self.collect_fields(data);
+            }
+            hir::ItemKind::Impl(impl_) => {
+                for id in impl_.items {
+                    self.record(self.cx.tcx.hir_impl_item(*id).hir_id());
+                }
+            }
+            hir::ItemKind::Trait { items, .. } => {
+                for id in *items {
+                    self.record(self.cx.tcx.hir_trait_item(*id).hir_id());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_fields(&mut self, data: &'tcx hir::VariantData<'tcx>) {
+        if let hir::VariantData::Struct { fields, .. } = data {
+            for field in *fields {
+                self.record(field.hir_id);
+            }
         }
     }
 }
@@ -198,6 +295,15 @@ impl<'tcx> LateLintPass<'tcx> for Pass {
         for item_id in cx.tcx.hir_free_items() {
             collector.collect_item(cx.tcx.hir_item(item_id));
         }
+        // Collect every attribute's source range up front: literals
+        // re-emitted by derives carry the attribute token's span, and
+        // the check needs the ranges of attributes that sit on OTHER
+        // owners (struct fields, variants) than the literal's
+        // generated code.
+        let mut attrs = AttrRangeCollector { cx, out: &mut self.attr_ranges };
+        for item_id in cx.tcx.hir_free_items() {
+            attrs.collect_item(cx.tcx.hir_item(item_id));
+        }
     }
 
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx hir::Item<'tcx>) {
@@ -239,6 +345,22 @@ impl<'tcx> LateLintPass<'tcx> for Pass {
         // serialize_struct("X", ..) borrows the struct ident's span,
         // so the finding would underline the NAME, not any literal).
         if in_foreign_expansion(e.span) || span_is_synthetic(cx, e, &lit.node) {
+            return;
+        }
+        // Attribute-carried literals are declaration data (the KEY
+        // names the value) — checked before everything else, including
+        // the string-in-string rule: a help text may legitimately
+        // quote a `"word"`. Ranges are file-global BytePos pairs, so a
+        // range from another file can never contain this span.
+        let span_data = e.span.data();
+        if std::env::var_os("INLINE_LITERAL_DEBUG").is_some() {
+            eprintln!("inline_literal: lit span {:?}..{:?} vs {} ranges", span_data.lo, span_data.hi, self.attr_ranges.len());
+        }
+        if self
+            .attr_ranges
+            .iter()
+            .any(|(lo, hi)| *lo <= span_data.lo && span_data.hi <= *hi)
+        {
             return;
         }
         match lit.node {
@@ -356,8 +478,9 @@ fn emit(cx: &LateContext<'_>, span: rustc_span::Span, what: &str) {
                  for counting boxes of eights), put it in a named const or \
                  silence the site with `#[allow(inline_literal)]`. Sanctioned \
                  inline: message strings (inside `Err(...)`, `assert!`, \
-                 `println!`, the log macros, ...), `+1`/`-1`, `*2`/`/2`, a \
-                 `0` argument of a call, and `bool` literals."
+                 `println!`, the log macros, `.context(...)`/`.with_context(...)`, \
+                 ...), attribute-carried tokens (`#[arg(num_args = 0..)]`), \
+                 `+1`/`-1`, `*2`/`/2`, a `0` argument of a call, and `bool` literals."
             ));
         }),
     );
@@ -493,15 +616,42 @@ fn in_message_position<'tcx>(
     registered: &[String],
 ) -> bool {
     let debug = std::env::var_os("INLINE_LITERAL_DEBUG").is_some();
-    // (b) `.expect("...")` — the message is panic-family prose (like
-    // `panic!`/`assert!`), carried as a DIRECT method argument.
+    // (b) message-carrying METHODS — `.expect("...")` is panic-family
+    // prose (like `panic!`/`assert!`), and the anyhow-style context
+    // pair `.context("...")` / `.with_context(|| "...")` is
+    // error-report prose — carried as a DIRECT method argument, or
+    // (for `with_context`) inside the lazy closure argument.
     if let Some((_, node)) = cx.tcx.hir_parent_iter(e.hir_id).next()
         && let hir::Node::Expr(pe) = node
         && let ExprKind::MethodCall(seg, _, margs, _) = pe.kind
-        && matches!(seg.ident.as_str(), "expect" | "expect_err")
+        && matches!(seg.ident.as_str(), "expect" | "expect_err" | "context" | "with_context")
         && margs.iter().any(|a| a.hir_id == e.hir_id)
     {
         return true;
+    }
+    // `.with_context(|| "...")`: the literal sits inside the closure
+    // that IS the argument — walk up through the closure body.
+    {
+        let mut cur = e.hir_id;
+        for _ in 0..8 {
+            let Some((parent_id, node)) = cx.tcx.hir_parent_iter(cur).next() else {
+                break;
+            };
+            match node {
+                hir::Node::Expr(pe) => match pe.kind {
+                    ExprKind::MethodCall(seg, _, margs, _)
+                        if seg.ident.as_str() == "with_context"
+                            && margs.iter().any(|a| a.hir_id == cur) =>
+                    {
+                        return true;
+                    }
+                    ExprKind::Closure(..) => cur = parent_id,
+                    _ => break,
+                },
+                hir::Node::Block(_) => cur = parent_id,
+                _ => break,
+            }
+        }
     }
     // (a) inside a message macro. The literal's own hygiene is root
     // (format-args capture keeps the original span), so the check

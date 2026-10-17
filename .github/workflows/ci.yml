@@ -165,6 +165,7 @@ jobs:
               echo "FAIL: $f produced a false positive in clippy list"
               clippy-driver "$f" --crate-type bin --edition 2021 \
                 -D clippy::multiple_unsafe_ops_per_block -D unused_unsafe \
+                --extern fixture_derive=$PWD/target/debug/libfixture_derive.so \
                 --out-dir target/clippy-fixture-out || true
               fail=1
             fi

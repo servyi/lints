@@ -9,4 +9,5 @@ members = [
     "lint-unsafe-scope",
     "lint-unsound-constructor",
     "lint-workspace-lints-table",
+    "fixture-derive",
 ]

@@ -130,13 +130,26 @@ else:
 def runner_of(file):
     parts = file.split("/tests/")
     if len(parts) == 2 and parts[0] and parts[1].endswith(".rs"):
-        return ("cargo", (parts[0].split("/")[-1], parts[1][:-3]))
+        return ("cargo", (manifest_dir(file), parts[1][:-3]))
     # Inline #[cfg(test)] tests inside a crate's own sources run via
     # the lib target; the span path is already module-qualified
     # (e.g. "tests::inline_add_works") and fits --exact directly.
     parts = file.split("/src/")
     if len(parts) == 2 and parts[0] and parts[1] in ("lib.rs", "main.rs"):
-        return ("unit", (parts[0].split("/")[-1],))
+        return ("unit", (manifest_dir(file),))
+    return None
+
+def manifest_dir(file, sha="HEAD"):
+    """Directory of the Cargo.toml that OWNS the file (nearest one up
+    the tree, resolved in git so branch checkouts are honored).  Cargo
+    is driven by --manifest-path from there: package-name guessing
+    breaks when the directory is not a workspace member (a standalone
+    tools/ crate) or the dir name differs from the package name."""
+    parts = file.split("/")
+    for i in range(len(parts) - 1, 0, -1):
+        cand = "/".join(parts[:i] + ["Cargo.toml"])
+        if sh("git", "cat-file", "-e", f"{sha}:{cand}", check=False).returncode == 0:
+            return "/".join(parts[:i])
     return None
 
 def build_cmd(file):
@@ -150,11 +163,10 @@ def build_cmd(file):
     r = runner_of(file)
     if r is None:
         return None
+    m = ["cargo", "test", "--locked", "--manifest-path", r[1][0] + "/Cargo.toml"]
     if r[0] == "unit":
-        (pkg,) = r[1]
-        return ["cargo", "test", "--locked", "-p", pkg, "--lib", "--no-run"]
-    pkg, stem = r[1]
-    return ["cargo", "test", "--locked", "-p", pkg, "--test", stem, "--no-run"]
+        return m + ["--lib", "--no-run"]
+    return m + ["--test", r[1][1], "--no-run"]
 
 def builds(file):
     """Does this file's test target COMPILE?  False + stderr tail on
@@ -168,27 +180,18 @@ def builds(file):
         print("    build failed ({}):\n{}".format(" ".join(cmd[2:]), tail))
     return r.returncode == 0
 
-def run_file(file, check=False):
-    r = runner_of(file)
-    if r is None:
-        return None
-    pkg, stem = r[1]
-    return sh("cargo", "test", "--locked", "-p", pkg, "--test", stem, check=check)
-
 def run_test(file, path, check=False):
     r = runner_of(file)
     if r is None:
         return None
+    m = ["cargo", "test", "--locked", "--manifest-path", r[1][0] + "/Cargo.toml"]
     if r[0] == "unit":
-        (pkg,) = r[1]
-        return sh("cargo", "test", "--locked", "-p", pkg, "--lib", "--",
-                  path, "--exact", check=check)
-    pkg, stem = r[1]
+        return sh(*m, "--lib", "--", path, "--exact", check=check)
+    stem = r[1][1]
     # The filter and --exact must be SEPARATE argv elements — a single
     # "path --exact" string matches no test and passes vacuously (the
     # C7/C10/C15 matrix rounds failed exactly there).
-    return sh("cargo", "test", "--locked", "-p", pkg, "--test", stem, "--",
-              path, "--exact", check=check)
+    return sh(*m, "--test", stem, "--", path, "--exact", check=check)
 
 files = sorted({f for f, _ in need})
 runnables = [(f, runner_of(f)) for f in files]

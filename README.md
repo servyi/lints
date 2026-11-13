@@ -104,3 +104,35 @@ from source:
           CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/nightly-check"
           cargo check --workspace --all-targets
 ```
+
+
+## Reusable CI: the negative-control gate
+
+`.github/workflows/negative-control.yml` is a **reusable workflow**:
+any repo (public, or same-org) can enforce the fault-injection
+convention — every test touched by a PR must FAIL on at least one
+declared fault branch (or be its own negative control by failing in
+its own last-touch commit).  Add:
+
+```yaml
+jobs:
+  negative-control:
+    uses: servyi/lints/.github/workflows/negative-control.yml@main
+```
+
+Inputs `toolchain` / `components` install a pinned rustup toolchain
+for workspaces that need one.  The PR declares its fault branches in
+its body:
+
+    Negative Control:
+    ```
+    /my-fault-branch
+    ```
+
+The gate diffs test REGIONS (whitespace-neutral, via `tools/test-spans`
+over ra_ap_syntax — so a fault may share a file with tests), runs every
+changed test with `--exact` on every declared branch, accepts
+test-first RED commits as self-controls, and lists every violation
+(missing branches, non-building branches, tampered tests, uncovered
+tests) in a single CI round.  Evidence: the 15-case validation suite
+in Servyi-Agent/ncgate-matrix (see TriedAngle/KetteVM#80).

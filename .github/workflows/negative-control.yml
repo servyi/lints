@@ -1,0 +1,132 @@
+# The negative-control gate as a REUSABLE workflow: every test touched
+# or added by a PR must FAIL on at least one companion fault branch —
+# proving the test can actually fail — OR be its own negative control
+# (fail in its own last-touch commit, the test-first RED shape).
+#
+# Use from any repo (public or same-org):
+#
+#   jobs:
+#     negative-control:
+#       uses: servyi/lints/.github/workflows/negative-control.yml@main
+#
+# Optional inputs:
+#   toolchain:  e.g. "nightly-2026-09-21" — install it first if the
+#               caller's workspace needs a pinned toolchain to build
+#               (the runner's preinstalled cargo is used otherwise).
+#   components: toolchain components (e.g. "rustc-dev, clippy").
+#
+# PR message contract (opt-in per PR, in the CALLER repo):
+#
+#     Negative Control:
+#     ```
+#     /branch/A
+#     /branch/B
+#     ```
+#
+# Rules (same gate as JonasOberhauser/agent-scripts #143/#156 and
+# TriedAngle/KetteVM #80 — validated on the Servyi-Agent/ncgate-matrix
+# 15-case suite; see PR #80's comments for the evidence):
+#   1. Span-level (this repo's tools/test-spans over ra_ap_syntax):
+#      every test REGION must be whitespace-neutral identical between
+#      the PR head and each declared branch — reformat-only diffs are
+#      cosmetic, not violations; any other test change rejects.
+#   2. Every changed test (by span path) must FAIL on at least one
+#      declared branch when run there (cargo test -- path --exact).
+#   3. A changed test that passes on every branch rejects the PR.
+#   4. Self-control: a changed test that FAILS in the LAST commit that
+#      touched its file is its own negative control — no branch needed.
+#   5. Missing and non-building declared branches reject (gracefully,
+#      and ALL violations are listed in one CI round).
+#   6. Cosmetic opt-out — a PR-body block:
+#
+#      The following tests have been touched only cosmetically:
+#      ```
+#      mod::foo_test_blah
+#      ```
+#
+#      drops the listed tests from rules 1 and 2 (a human verifies).
+#
+# Test kinds mapped automatically (in the CALLER workspace):
+#   - `<crate>/tests/<name>.rs`   → cargo test -p <crate> --test <name>
+#   - `<crate>/src/{lib,main}.rs` → cargo test -p <crate> --lib
+# Other touched .rs files (fixture files, examples) stay
+# review-covered — the gate only rules on cargo-runnable tests.
+name: negative-control
+
+on:
+  workflow_call:
+    inputs:
+      toolchain:
+        description: "Pin a rustup toolchain for the caller workspace (empty = runner default)"
+        type: string
+        default: ""
+      components:
+        description: "Components for the pinned toolchain (comma-separated)"
+        type: string
+        default: ""
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: negative-control-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: negative control (tests must be able to fail)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the base..head, branch, and self-control diffs need history
+          persist-credentials: false
+
+      - name: Check out this gate repo (default branch; resolved to the called ref below)
+        uses: actions/checkout@v4
+        with:
+          repository: servyi/lints
+          path: gate-repo
+
+      - name: Resolve the gate repo ref from the workflow_ref
+        run: |
+          # For workflow_call, github.ref points at the CALLER's ref;
+          # the called workflow's own ref lives at the tail of
+          # GITHUB_WORKFLOW_REF (owner/repo/.github/workflows/x.yml@REF).
+          ref="${GITHUB_WORKFLOW_REF##*@}"
+          if git -C gate-repo fetch --depth=1 origin "$ref" 2>/dev/null; then
+            git -C gate-repo checkout -q FETCH_HEAD
+            echo "gate ref: $ref"
+          else
+            echo "gate ref '$ref' not fetchable - keeping the default branch checkout" >&2
+          fi
+
+      - name: Install the caller's pinned toolchain (optional)
+        if: inputs.toolchain != ''
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.toolchain }}
+          components: ${{ inputs.components }}
+
+      - name: Build the spans tool (standalone crate, runner cargo)
+        # RUSTUP_TOOLCHAIN=stable: the caller's (or this repo's)
+        # rust-toolchain.toml must not leak into building the tool.
+        run: RUSTUP_TOOLCHAIN=stable cargo build --release --manifest-path gate-repo/tools/test-spans/Cargo.toml
+
+      - name: Parse the PR-body blocks
+        id: parse
+        run: |
+          python3 gate-repo/ci/github/parse_pr_blocks.py
+
+      - name: Gate — identical test regions, every changed test fails somewhere
+        env:
+          BRANCHES: ${{ steps.parse.outputs.branches }}
+          COSMETIC: ${{ steps.parse.outputs.cosmetic }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SPANS_BIN: ${{ github.workspace }}/gate-repo/tools/test-spans/target/release/test-spans
+        run: |
+          set -eu
+          python3 gate-repo/ci/github/negative-control-gate.py

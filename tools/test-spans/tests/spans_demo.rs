@@ -53,6 +53,9 @@ fn mod_region_encloses_its_fns() {
 #[test]
 fn non_test_code_has_no_spans() {
     let s = spans(SAMPLE);
+    // non-vacuous on purpose: an empty span set must fail here, not
+    // pass two vacuous `all`/`any` filters (the absent-evidence trap)
+    assert_eq!(s.len(), 4, "mod + 3 fns: {s:?}");
     assert!(s.iter().all(|x| x.path.contains("test") || x.path.contains("smoke")));
     assert!(!s.iter().any(|x| x.path.contains("add(a")));
 }

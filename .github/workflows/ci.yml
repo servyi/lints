@@ -173,6 +173,14 @@ jobs:
           done
           exit $fail
 
+  negative-control:
+    # Dogfood the reusable gate on this repo's own PRs (the gate is
+    # the product here - it must gate itself).
+    uses: ./.github/workflows/negative-control.yml
+    with:
+      toolchain: nightly-2026-09-21
+      components: rustc-dev
+
   driver-binary:
     # Produce the driver binary as a downloadable artifact instead of
     # committing built binaries to the tree.

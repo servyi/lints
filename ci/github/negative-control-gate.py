@@ -139,6 +139,35 @@ def runner_of(file):
         return ("unit", (parts[0].split("/")[-1],))
     return None
 
+def build_cmd(file):
+    """The COMPILE-ONLY command for the targets a file's tests run in.
+
+    Per-target on purpose: a whole-workspace --all-targets build is
+    neither needed nor universally possible (e.g. rustc-driver-linked
+    lint crates do not compile as lib-test targets) - the gate only
+    owes proof that THESE tests can build and run.
+    """
+    r = runner_of(file)
+    if r is None:
+        return None
+    if r[0] == "unit":
+        (pkg,) = r[1]
+        return ["cargo", "test", "--locked", "-p", pkg, "--lib", "--no-run"]
+    pkg, stem = r[1]
+    return ["cargo", "test", "--locked", "-p", pkg, "--test", stem, "--no-run"]
+
+def builds(file):
+    """Does this file's test target COMPILE?  False + stderr tail on
+    failure (a broken build proves nothing, and the reason matters)."""
+    cmd = build_cmd(file)
+    if cmd is None:
+        return True  # nothing to compile for this mapping
+    r = sh(*cmd, check=False)
+    if r.returncode != 0:
+        tail = "\n".join((r.stderr or r.stdout or "").strip().splitlines()[-12:])
+        print("    build failed ({}):\n{}".format(" ".join(cmd[2:]), tail))
+    return r.returncode == 0
+
 def run_file(file, check=False):
     r = runner_of(file)
     if r is None:
@@ -161,9 +190,6 @@ def run_test(file, path, check=False):
     return sh("cargo", "test", "--locked", "-p", pkg, "--test", stem, "--",
               path, "--exact", check=check)
 
-def build(check=False):
-    return sh("cargo", "build", "--locked", "--workspace", "--all-targets", check=check)
-
 files = sorted({f for f, _ in need})
 runnables = [(f, runner_of(f)) for f in files]
 runnables = [(f, r) for f, r in runnables if r is not None]
@@ -181,7 +207,7 @@ for (f, p), kind in sorted(need.items()):
         continue
     sha = shas[0]
     sh("git", "checkout", "-q", "--detach", sha)
-    if build(check=False).returncode != 0:
+    if not builds(f):
         print(f"  self-control {f} :: {p}: last-touch commit does not build — no proof")
         continue
     if run_test(f, p, check=False).returncode != 0:
@@ -206,8 +232,9 @@ results = {k: False for k in need_b}
 broken = []
 for ref, sha in sorted(fetched.items()):
     sh("git", "checkout", "-q", "--detach", sha)
-    print(f"=== {ref}: building")
-    if build(check=False).returncode != 0:
+    ok = all(builds(f) for (f, _) in sorted(need_b))
+    print(f"=== {ref}: {'building' if ok else 'BROKEN'}")
+    if not ok:
         broken.append(ref)
         continue
     for (f, p) in sorted(need_b):

@@ -34,9 +34,15 @@
 #      declared branch when run there (cargo test -- path --exact).
 #   3. A changed test that passes on every branch rejects the PR.
 #   4. Self-control: a changed test that FAILS in the LAST commit that
-#      touched its file is its own negative control — no branch needed.
+#      touched its file is its own negative control — no branch needed
+#      (and in that RED commit, every OTHER test must still pass).
 #   5. Missing and non-building declared branches reject (gracefully,
 #      and ALL violations are listed in one CI round).
+#   6. Old tests stay green: on every fault branch (and in every RED
+#      commit) the changed tests' targets run UNFILTERED and any
+#      failing test that the PR did NOT touch rejects the control —
+#      the fault must be one the OLD tests miss (a fault they already
+#      catch proves nothing about the new tests' detection power).
 #   6. Cosmetic opt-out — a PR-body block:
 #
 #      The following tests have been touched only cosmetically:
@@ -44,7 +50,7 @@
 #      mod::foo_test_blah
 #      ```
 #
-#      drops the listed tests from rules 1 and 2 (a human verifies).
+#      drops the listed tests from rules 1-2 and 6 (a human verifies).
 #
 # Test kinds mapped automatically (in the CALLER workspace):
 #   - `<crate>/tests/<name>.rs`   → cargo test -p <crate> --test <name>

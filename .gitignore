@@ -1,2 +1,3 @@
 /target
 tools/test-spans/target/
+ci/github/__pycache__/

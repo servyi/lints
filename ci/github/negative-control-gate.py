@@ -14,6 +14,7 @@ SPANS_BIN (optional).
 """
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -180,18 +181,28 @@ def builds(file):
         print("    build failed ({}):\n{}".format(" ".join(cmd[2:]), tail))
     return r.returncode == 0
 
-def run_test(file, path, check=False):
+def run_target(file, check=False):
+    """Run the file's WHOLE test target unfiltered and return the set
+    of FAILED test names (libtest prints 'test NAME ... FAILED').
+
+    One run per target replaces per-test --exact invocations, and the
+    failed set is what makes the old-tests-stay-green rule possible:
+    the fault must be caught ONLY by the PR's own tests."""
     r = runner_of(file)
     if r is None:
         return None
     m = ["cargo", "test", "--locked", "--manifest-path", r[1][0] + "/Cargo.toml"]
     if r[0] == "unit":
-        return sh(*m, "--lib", "--", path, "--exact", check=check)
-    stem = r[1][1]
-    # The filter and --exact must be SEPARATE argv elements — a single
-    # "path --exact" string matches no test and passes vacuously (the
-    # C7/C10/C15 matrix rounds failed exactly there).
-    return sh(*m, "--test", stem, "--", path, "--exact", check=check)
+        r = sh(*m, "--lib", check=check)
+    else:
+        r = sh(*m, "--test", r[1][1], check=check)
+    failed = set()
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
+    for line in (r.stdout or "").splitlines():
+        line = ansi.sub("", line).strip()
+        if line.startswith("test ") and line.endswith("FAILED"):
+            failed.add(line[len("test "):-len(" ... FAILED")].strip())
+    return failed
 
 files = sorted({f for f, _ in need})
 runnables = [(f, runner_of(f)) for f in files]
@@ -201,9 +212,9 @@ if not runnables:
     sys.exit(0)
 
 # ── Self-control: the LAST commit touching the FILE, the  ──
-# ── specific test must FAIL there.                        ──
+# ── specific test must FAIL there — and NOTHING ELSE may. ──
 self_caught = set()
-for (f, p), kind in sorted(need.items()):
+for f in sorted({f for (f, _p) in need}):
     out = sh("git", "rev-list", base + ".." + head, "--", f).stdout
     shas = out.split()
     if not shas:
@@ -211,9 +222,18 @@ for (f, p), kind in sorted(need.items()):
     sha = shas[0]
     sh("git", "checkout", "-q", "--detach", sha)
     if not builds(f):
-        print(f"  self-control {f} :: {p}: last-touch commit does not build — no proof")
+        for (ff, p) in sorted(need):
+            if ff == f:
+                print(f"  self-control {f} :: {p}: last-touch commit does not build — no proof")
         continue
-    if run_test(f, p, check=False).returncode != 0:
+    failed = run_target(f, check=False)
+    mine = {p for (ff, p) in need if ff == f}
+    for name in sorted(failed - mine):
+        print(f"REJECT: self-control {f}: existing test {name} already fails in the RED commit — "
+              "the fault was covered before this PR; inject one the old tests miss")
+    if failed - mine:
+        sys.exit(1)
+    for p in sorted(mine & failed):
         print(f"  self-control {f} :: {p}: FAILS in its own last-touch commit")
         self_caught.add((f, p))
 sh("git", "checkout", "-q", head)
@@ -233,6 +253,7 @@ if not branches:
 # every broken one reported, so one CI round lists everything.
 results = {k: False for k in need_b}
 broken = []
+already = []  # (branch, file, old test name) — faults pre-covered
 for ref, sha in sorted(fetched.items()):
     sh("git", "checkout", "-q", "--detach", sha)
     ok = all(builds(f) for (f, _) in sorted(need_b))
@@ -240,14 +261,23 @@ for ref, sha in sorted(fetched.items()):
     if not ok:
         broken.append(ref)
         continue
-    for (f, p) in sorted(need_b):
-        failed = run_test(f, p, check=False).returncode != 0
-        print(f"  {f} :: {p}: {'FAIL (caught)' if failed else 'pass'}")
-        if failed:
-            results[(f, p)] = True
+    for f in sorted({f for (f, _p) in need_b}):
+        failed = run_target(f, check=False)
+        mine = {p for (ff, p) in need_b if ff == f}
+        for name in sorted(failed - mine):
+            already.append((ref, f, name))
+        for (ff, p) in sorted(need_b):
+            if ff == f:
+                caught = p in failed
+                print(f"  {f} :: {p}: {'FAIL (caught)' if caught else 'pass'}")
+                if caught:
+                    results[(f, p)] = True
 
+for ref, f, name in already:
+    print(f"REJECT: branch {ref} — the fault is already caught by existing test {name} ({f}); "
+          "inject a fault the OLD tests miss")
 missed = [k for k, caught in results.items() if not caught]
-rejected = False
+rejected = bool(already)
 if missed:
     print("REJECT: tests that pass on EVERY negative-control branch:")
     for (f, p) in sorted(missed):

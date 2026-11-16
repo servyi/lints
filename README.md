@@ -130,9 +130,11 @@ its body:
     ```
 
 The gate diffs test REGIONS (whitespace-neutral, via `tools/test-spans`
-over ra_ap_syntax — so a fault may share a file with tests), runs every
-changed test with `--exact` on every declared branch, accepts
+over ra_ap_syntax — so a fault may share a file with tests), runs the
+changed tests' targets unfiltered on every declared branch, accepts
 test-first RED commits as self-controls, and lists every violation
 (missing branches, non-building branches, tampered tests, uncovered
-tests) in a single CI round.  Evidence: the 15-case validation suite
+tests) in a single CI round.  The fault must be one the OLD tests
+miss: any UNtouched test failing on a fault branch (or in a RED
+commit) rejects the control — named, in the same single report.  Evidence: the 15-case validation suite
 in Servyi-Agent/ncgate-matrix (see TriedAngle/KetteVM#80).

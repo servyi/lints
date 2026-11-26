@@ -211,7 +211,7 @@ def run_target(file, mine=None, check=False):
     run = sh(*args, check=check)
     failed = set()
     ansi = re.compile(r"\x1b\[[0-9;]*m")
-    for line in (r.stdout or "").splitlines():
+    for line in (run.stdout or "").splitlines():
         line = ansi.sub("", line).strip()
         if line.startswith("test ") and line.endswith("FAILED"):
             failed.add(line[len("test "):-len(" ... FAILED")].strip())

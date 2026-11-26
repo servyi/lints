@@ -23,7 +23,14 @@ import region_diff
 
 branches = json.loads(os.environ["BRANCHES"])
 cosmetic = set(json.loads(os.environ.get("COSMETIC", "[]")))
-base, head = os.environ["BASE_SHA"], os.environ["HEAD_SHA"]
+base, head = (os.environ.get("BASE_SHA") or ""), (os.environ.get("HEAD_SHA") or "")
+if not base or not head:
+    # Non-PR events (push, workflow_dispatch) carry no pull_request
+    # context: the gate is per-PR by construction, so skip with a
+    # clear line instead of diffing empty SHAs (issue #31).
+    print("no pull_request context (BASE_SHA/HEAD_SHA unset) — "
+          "the negative control applies to pull requests; skipping")
+    sys.exit(0)
 
 def sh(*cmd, check=True):
     return subprocess.run(cmd, capture_output=True, text=True, check=check)

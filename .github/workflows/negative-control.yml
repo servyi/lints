@@ -52,11 +52,18 @@
 #
 #      drops the listed tests from rules 1-2 and 6 (a human verifies).
 #
-# Test kinds mapped automatically (in the CALLER workspace):
-#   - `<crate>/tests/<name>.rs`   → cargo test -p <crate> --test <name>
-#   - `<crate>/src/{lib,main}.rs` → cargo test -p <crate> --lib
+# Test kinds mapped automatically (in the CALLER workspace), from each
+# file's path RELATIVE to the crate that owns it (the nearest Cargo.toml)
+# — a crate at the repository root is recognized like one in a
+# subdirectory:
+#   - `<crate>/tests/<name>.rs` → that integration-test target
+#   - `<crate>/src/**.rs`       → the crate's own target (--lib, or
+#                                 --bins for a crate without a library):
+#                                 inline #[cfg(test)] tests, wherever
+#                                 in the crate's sources they live
 # Other touched .rs files (fixture files, examples) stay
-# review-covered — the gate only rules on cargo-runnable tests.
+# review-covered — the gate only rules on cargo-runnable tests, and
+# skips them with a line.
 name: negative-control
 
 on:

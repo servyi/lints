@@ -136,29 +136,63 @@ else:
 
 # ── The RUNNER: how a test file/target executes. ──
 def runner_of(file):
-    parts = file.split("/tests/")
-    if len(parts) == 2 and parts[0] and parts[1].endswith(".rs"):
-        return ("cargo", (manifest_dir(file), parts[1][:-3]))
-    # Inline #[cfg(test)] tests inside a crate's own sources run via
-    # the lib target; the span path is already module-qualified
-    # (e.g. "tests::inline_add_works") and fits --exact directly.
-    parts = file.split("/src/")
-    if len(parts) == 2 and parts[0] and parts[1] in ("lib.rs", "main.rs"):
-        return ("unit", (manifest_dir(file),))
+    """How a touched file's tests execute — from its path RELATIVE to the
+    crate that owns it, so a crate at a repository root is recognized
+    exactly like one in a subdirectory.
+
+    The path used to be matched from the repository root with a directory
+    required in front of `/src/` or `/tests/`: for the root crate it
+    matched nothing at all — neither `src/lib.rs` nor `tests/<name>.rs`
+    — and the gate crashed on the first of its changed tests."""
+    crate = manifest_dir(file)
+    if crate is None:
+        return None
+    parts = os.path.relpath(file, crate).split("/")
+    # `<crate>/tests/<name>.rs`: one integration-test target
+    if len(parts) == 2 and parts[0] == "tests" and parts[1].endswith(".rs"):
+        return ("cargo", (crate, parts[1][:-3]))
+    # any of the crate's own sources: inline #[cfg(test)] tests run
+    # through the crate's own test target; the span path is already
+    # module-qualified (e.g. "tests::inline_add_works") and fits
+    # --exact directly.
+    if parts[0] == "src" and file.endswith(".rs"):
+        return ("unit", (crate,))
+    # anything else (fixtures, examples, scripts): review-covered
     return None
 
 def manifest_dir(file, sha="HEAD"):
     """Directory of the Cargo.toml that OWNS the file (nearest one up
-    the tree, resolved in git so branch checkouts are honored).  Cargo
-    is driven by --manifest-path from there: package-name guessing
-    breaks when the directory is not a workspace member (a standalone
-    tools/ crate) or the dir name differs from the package name."""
+    the tree, resolved in git so branch checkouts are honored) —
+    including the repository root, where the crate that sits there
+    lives ("." is returned for it).  Cargo is driven by --manifest-path
+    from there: package-name guessing breaks when the directory is not a
+    workspace member (a standalone tools/ crate) or the dir name differs
+    from the package name."""
     parts = file.split("/")
-    for i in range(len(parts) - 1, 0, -1):
+    # down to i == 0: "<root>/Cargo.toml". The loop used to stop at 1,
+    # so no file of a crate at the repository root had an owner.
+    for i in range(len(parts) - 1, -1, -1):
         cand = "/".join(parts[:i] + ["Cargo.toml"])
         if sh("git", "cat-file", "-e", f"{sha}:{cand}", check=False).returncode == 0:
-            return "/".join(parts[:i])
+            return "/".join(parts[:i]) or "."
     return None
+
+
+def in_crate(crate, *parts):
+    """A repository-relative path inside `crate` ("." for the root)."""
+    return "/".join(([crate] if crate != "." else []) + list(parts))
+
+
+def manifest_path(crate):
+    return os.path.join(crate, "Cargo.toml")
+
+
+def unit_target_args(crate):
+    """The cargo target selection a crate's inline tests run through: its
+    library if it has one, otherwise its binaries (a bin-only crate has
+    no `--lib`)."""
+    has_lib = sh("git", "cat-file", "-e", f"HEAD:{in_crate(crate, 'src', 'lib.rs')}", check=False)
+    return ["--lib"] if has_lib.returncode == 0 else ["--bins"]
 
 def build_cmd(file):
     """The COMPILE-ONLY command for the targets a file's tests run in.
@@ -171,9 +205,9 @@ def build_cmd(file):
     r = runner_of(file)
     if r is None:
         return None
-    m = ["cargo", "test", "--locked", "--manifest-path", r[1][0] + "/Cargo.toml"]
+    m = ["cargo", "test", "--locked", "--manifest-path", manifest_path(r[1][0])]
     if r[0] == "unit":
-        return m + ["--lib", "--no-run"]
+        return m + unit_target_args(r[1][0]) + ["--no-run"]
     return m + ["--test", r[1][1], "--no-run"]
 
 def builds(file):
@@ -193,9 +227,9 @@ def run_test(file, path, check=False):
     r = runner_of(file)
     if r is None:
         return None
-    m = ["cargo", "test", "--locked", "--manifest-path", r[1][0] + "/Cargo.toml"]
+    m = ["cargo", "test", "--locked", "--manifest-path", manifest_path(r[1][0])]
     if r[0] == "unit":
-        return sh(*m, "--lib", "--", path, "--exact", check=check)
+        return sh(*m, *unit_target_args(r[1][0]), "--", path, "--exact", check=check)
     return sh(*m, "--test", r[1][1], "--", path, "--exact", check=check)
 
 def run_target(file, mine=None, check=False):
@@ -213,8 +247,8 @@ def run_target(file, mine=None, check=False):
     r = runner_of(file)
     if r is None:
         return None
-    m = ["cargo", "test", "--locked", "--manifest-path", r[1][0] + "/Cargo.toml"]
-    args = m + (["--lib"] if r[0] == "unit" else ["--test", r[1][1]])
+    m = ["cargo", "test", "--locked", "--manifest-path", manifest_path(r[1][0])]
+    args = m + (unit_target_args(r[1][0]) if r[0] == "unit" else ["--test", r[1][1]])
     run = sh(*args, check=check)
     failed = set()
     ansi = re.compile(r"\x1b\[[0-9;]*m")
@@ -242,6 +276,13 @@ if not runnables:
 # ── specific test must FAIL there — and NOTHING ELSE may. ──
 self_caught = set()
 for f in sorted({f for (f, _p) in need}):
+    if runner_of(f) is None:
+        # no cargo target runs this file's tests (a fixture, an example):
+        # review-covered — the gate only rules on cargo-runnable tests
+        for (ff, p) in sorted(need):
+            if ff == f:
+                print(f"  {f} :: {p}: no cargo target — review-covered, not run by the gate")
+        continue
     out = sh("git", "rev-list", base + ".." + head, "--", f).stdout
     shas = out.split()
     if not shas:
@@ -289,6 +330,8 @@ for ref, sha in sorted(fetched.items()):
         broken.append(ref)
         continue
     for f in sorted({f for (f, _p) in need_b}):
+        if runner_of(f) is None:
+            continue  # review-covered: no cargo target runs it
         mine = {p for (ff, p) in need_b if ff == f}
         failed = run_target(f, mine=mine, check=False)
         for name in sorted(failed - mine):

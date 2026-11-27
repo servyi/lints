@@ -194,6 +194,39 @@ def unit_target_args(crate):
     has_lib = sh("git", "cat-file", "-e", f"HEAD:{in_crate(crate, 'src', 'lib.rs')}", check=False)
     return ["--lib"] if has_lib.returncode == 0 else ["--bins"]
 
+def mod_prefix(file):
+    """The MODULE path of a crate-source file inside its crate (Cargo's
+    standard mapping) — the prefix libtest prints in front of a
+    file-local test path.
+
+    The span paths of `src/<module>.rs` are file-local (`tests::x`);
+    libtest runs that test as `<module>::tests::x`.  Integration-test
+    files and crate roots (src/lib.rs, src/main.rs, src/bin/*.rs —
+    each its own crate root) print the span path as-is: no prefix.
+
+    A wrong prefix here is not silent: it makes the test unmatchable,
+    which reads as "never fails on any branch" and rejects the PR."""
+    r = runner_of(file)
+    if r is None or r[0] != "unit":
+        return ""
+    rel = os.path.relpath(file, r[1][0]).split("/")
+    if len(rel) < 2 or rel[0] != "src" or not rel[-1].endswith(".rs"):
+        return ""
+    tail = rel[1:]
+    # crate roots: their own test namespace, no prefix
+    if tail == ["lib.rs"] or tail == ["main.rs"] or tail[:1] == ["bin"]:
+        return ""
+    if tail[-1] == "mod.rs":
+        tail = tail[:-1]
+    else:
+        tail[-1] = tail[-1][: -len(".rs")]
+    return "::".join(tail)
+
+def full_name(file, path):
+    """libtest's name for a span path of `file` (see mod_prefix)."""
+    prefix = mod_prefix(file)
+    return f"{prefix}::{path}" if prefix else path
+
 def build_cmd(file):
     """The COMPILE-ONLY command for the targets a file's tests run in.
 
@@ -223,7 +256,10 @@ def builds(file):
     return r.returncode == 0
 
 def run_test(file, path, check=False):
-    """Single-test --exact run (the abort-attribution fallback)."""
+    """Single-test --exact run (the abort-attribution fallback).
+
+    `path` is the FULL libtest name (see full_name) — the abort loop
+    passes normalized names in."""
     r = runner_of(file)
     if r is None:
         return None
@@ -272,6 +308,26 @@ if not runnables:
     print("changed tests map to no runner — gate passes (review covers them)")
     sys.exit(0)
 
+# ── Target unions: every changed test of a RUNNER. ──
+# One lib target carries the changed tests of many src files; the
+# sweep runs that target once per FILE, so "the PR did not touch"
+# (rules 4 and 6) must be judged against the UNION of changed tests
+# mapped to the same runner — a changed test of another file failing
+# in this file's run is the fault being caught, not a pre-covered one.
+def target_key(file):
+    r = runner_of(file)
+    if r is None:
+        return None
+    if r[0] == "unit":
+        return ("unit", r[1][0], tuple(unit_target_args(r[1][0])))
+    return ("test", r[1][0], r[1][1])
+
+target_changed = {}
+for (f, p) in need:
+    k = target_key(f)
+    if k is not None:
+        target_changed.setdefault(k, set()).add(full_name(f, p))
+
 # ── Self-control: the LAST commit touching the FILE, the  ──
 # ── specific test must FAIL there — and NOTHING ELSE may. ──
 self_caught = set()
@@ -295,15 +351,20 @@ for f in sorted({f for (f, _p) in need}):
                 print(f"  self-control {f} :: {p}: last-touch commit does not build — no proof")
         continue
     mine = {p for (ff, p) in need if ff == f}
-    failed = run_target(f, mine=mine, check=False)
-    for name in sorted(failed - mine):
+    mine_full = {full_name(f, p) for p in mine}
+    failed = run_target(f, mine=mine_full, check=False)
+    # changed tests of OTHER files in the same runner are allowed to
+    # fail here too (target_changed is the union)
+    allowed = target_changed.get(target_key(f), set())
+    for name in sorted(failed - allowed):
         print(f"REJECT: self-control {f}: existing test {name} already fails in the RED commit — "
               "the fault was covered before this PR; inject one the old tests miss")
-    if failed - mine:
+    if failed - allowed:
         sys.exit(1)
-    for p in sorted(mine & failed):
-        print(f"  self-control {f} :: {p}: FAILS in its own last-touch commit")
-        self_caught.add((f, p))
+    for p in sorted(mine):
+        if full_name(f, p) in failed:
+            print(f"  self-control {f} :: {p}: FAILS in its own last-touch commit")
+            self_caught.add((f, p))
 sh("git", "checkout", "-q", head)
 
 need_b = {k: v for k, v in need.items() if k not in self_caught}
@@ -333,12 +394,16 @@ for ref, sha in sorted(fetched.items()):
         if runner_of(f) is None:
             continue  # review-covered: no cargo target runs it
         mine = {p for (ff, p) in need_b if ff == f}
-        failed = run_target(f, mine=mine, check=False)
-        for name in sorted(failed - mine):
+        mine_full = {full_name(f, p) for p in mine}
+        failed = run_target(f, mine=mine_full, check=False)
+        # the union of changed tests in this runner: only failures
+        # OUTSIDE it are pre-existing (rule 6)
+        allowed = target_changed.get(target_key(f), set())
+        for name in sorted(failed - allowed):
             already.append((ref, f, name))
         for (ff, p) in sorted(need_b):
             if ff == f:
-                caught = p in failed
+                caught = full_name(f, p) in failed
                 print(f"  {f} :: {p}: {'FAIL (caught)' if caught else 'pass'}")
                 if caught:
                     results[(f, p)] = True
